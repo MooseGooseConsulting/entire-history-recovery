@@ -44,7 +44,7 @@ Initial code baseline: `5b2a0f6`, Entire Go dependency v0.12.2. The implementati
 
 `ImportCodex` currently passes neither `ReadRemotes` nor `RemoteRefLister`. Upstream `agentimport.Run` builds an existing-ID set only if `stores.Persistent.List(...)` succeeds; a list failure otherwise leaves that set empty. Stock imported IDs use native session ID and importer turn key; the Codex turn key is a raw line position. These facts are why the current prototype is not sufficient for production deduplication.
 
-The experimental [`cmd/recover-one` CLI](../snapshot-command.md) is in the open implementation stack. It accepts verified private snapshots and previews by default. Its local write path still does not enforce production mapping, remote/server inventory or semantic reconciliation. The separate `internal/reconcile` reader and exact-coverage assessment have not yet been connected to that write path; zero-write retries are not proof of global duplicate prevention.
+The experimental [`cmd/recover-one` CLI](../snapshot-command.md) is in the open implementation stack. It accepts verified private snapshots and previews by default. Local exact-coverage reconciliation is now connected to the writer: matching coverage skips regardless of checkpoint ID; partial/conflicting coverage or returned inventory errors stop the write. Production mapping, complete remote/server inventory and broader semantic alignment remain incomplete. Upstream inventory can silently omit unreadable entries; zero-write retries are not proof of global duplicate prevention.
 
 ## Recovery without the old checkout
 
