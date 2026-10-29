@@ -10,6 +10,9 @@ import (
 	"testing"
 
 	"github.com/entireio/cli/cmd/entire/cli/agentimport"
+	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
+	"github.com/entireio/cli/cmd/entire/cli/settings"
+	git "github.com/go-git/go-git/v6"
 )
 
 func integrityRepo(t *testing.T) string {
@@ -35,7 +38,7 @@ func TestSourceChangeBetweenValidationAndParsingRejected(t *testing.T) {
 	}
 }
 
-func TestAppendOnlyRecoveryRetainsExistingCheckpointIdentity(t *testing.T) {
+func TestAppendOnlyRecoveryIsHeldWhenTranscriptChanges(t *testing.T) {
 	for _, backend := range []string{"git-branch", "git-refs"} {
 		t.Run(backend, func(t *testing.T) {
 			t.Setenv("ENTIRE_CHECKPOINTS_PRIMARY", backend)
@@ -50,18 +53,29 @@ func TestAppendOnlyRecoveryRetainsExistingCheckpointIdentity(t *testing.T) {
 			if err != nil || first.TurnsImported != 1 {
 				t.Fatalf("initial: %+v %v", first, err)
 			}
-			// A second prompt at a new raw line must not regenerate the first ID,
-			// even when its timestamp and text match the previous prompt.
+			// The candidate now has a different full transcript. The prototype
+			// cannot safely distinguish an append from a partial/conflicting
+			// historical snapshot, so it must hold without writing.
 			if err := os.WriteFile(source, []byte(original+integrityPrompt), 0600); err != nil {
 				t.Fatal(err)
 			}
 			second, err := ImportCodex(context.Background(), root, source, anchor, false)
-			if err != nil || second.TurnsImported != 1 || second.TurnsSkipped != 1 {
-				t.Fatalf("append: %+v %v", second, err)
+			if err == nil || second.TurnsImported != 0 {
+				t.Fatalf("changed transcript was not held: %+v %v", second, err)
 			}
-			third, err := ImportCodex(context.Background(), root, source, anchor, false)
-			if err != nil || third.TurnsImported != 0 || third.TurnsSkipped != 2 {
-				t.Fatalf("repeat: %+v %v", third, err)
+			repo, err := git.PlainOpen(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stores, err := checkpoint.Open(settings.WithWorktreeRoot(context.Background(), root), repo, checkpoint.OpenOptions{})
+			if err != nil {
+				_ = repo.Close()
+				t.Fatal(err)
+			}
+			items, err := stores.Persistent.List(context.Background())
+			_ = repo.Close()
+			if err != nil || len(items) != 1 {
+				t.Fatalf("held append changed checkpoint inventory: %d items, %v", len(items), err)
 			}
 		})
 	}

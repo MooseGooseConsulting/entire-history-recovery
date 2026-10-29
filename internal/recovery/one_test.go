@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/entireio/cli/cmd/entire/cli/agentimport"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
+	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/redact"
 	git "github.com/go-git/go-git/v6"
@@ -31,6 +33,146 @@ func destinationHead(t *testing.T, root string) string {
 		t.Fatal(err)
 	}
 	return head.Hash().String()
+}
+
+type syntheticCoverageInventory struct {
+	info    checkpoint.CheckpointInfo
+	summary *checkpoint.CheckpointSummary
+	content *checkpoint.SessionContent
+	readErr error
+}
+
+func (s syntheticCoverageInventory) List(context.Context) ([]checkpoint.CheckpointInfo, error) {
+	return []checkpoint.CheckpointInfo{s.info}, nil
+}
+func (s syntheticCoverageInventory) Read(context.Context, id.CheckpointID) (*checkpoint.CheckpointSummary, error) {
+	if s.readErr != nil {
+		return nil, s.readErr
+	}
+	return s.summary, nil
+}
+func (s syntheticCoverageInventory) ReadSessionContent(context.Context, id.CheckpointID, int) (*checkpoint.SessionContent, error) {
+	return s.content, nil
+}
+
+func syntheticCodexSource(t *testing.T, root string) (string, string) {
+	t.Helper()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_AUTHOR_NAME=Fixture", "GIT_AUTHOR_EMAIL=fixture@example.invalid", "GIT_COMMITTER_NAME=Fixture", "GIT_COMMITTER_EMAIL=fixture@example.invalid")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	run("init", "--quiet")
+	run("commit", "--quiet", "--allow-empty", "-m", "fixture")
+	contents := `{"timestamp":"2020-01-01T00:00:00Z","type":"session_meta","payload":{"id":"session-coverage-fixture","cwd":"/deleted/checkout"}}
+{"timestamp":"2020-01-01T00:00:00Z","type":"event_msg","payload":{"type":"task_started","turn_id":"fixture-turn"}}
+{"timestamp":"2020-01-01T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fixture question"}]}}
+{"timestamp":"2020-01-01T00:00:01Z","type":"turn_context","payload":{"turn_id":"fixture-turn","model":"fixture-model"}}
+{"timestamp":"2020-01-01T00:00:02Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"fixture answer"}]}}
+{"timestamp":"2020-01-01T00:00:03Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"fixture-turn"}}
+`
+	source := filepath.Join(t.TempDir(), "source.jsonl")
+	if err := os.WriteFile(source, []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return source, destinationHead(t, root)
+}
+
+func TestImportSkipsExactCoverageUnderDifferentCheckpointID(t *testing.T) {
+	root := t.TempDir()
+	source, anchor := syntheticCodexSource(t, root)
+	full, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := agentimport.All()[0]
+	for _, candidate := range agentimport.All() {
+		if candidate.Name() == "codex" {
+			adapter = candidate
+			break
+		}
+	}
+	file := agentimport.SessionFile{Path: source, SessionID: "session-coverage-fixture"}
+	turns, err := adapter.SplitTurns(file, full)
+	if err != nil || len(turns) != 1 {
+		t.Fatalf("split: %d turns, %v", len(turns), err)
+	}
+	transcript, err := redact.JSONLBytes(checkpoint.SanitizeTranscriptForAgentType(adapter.AgentType(), full))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cid := id.MustCheckpointID("abcdef123456") // intentionally unrelated to the importer-derived ID
+	inv := syntheticCoverageInventory{
+		info:    checkpoint.CheckpointInfo{CheckpointID: cid},
+		summary: &checkpoint.CheckpointSummary{CheckpointID: cid, Sessions: []checkpoint.SessionFilePaths{{}}},
+		content: &checkpoint.SessionContent{Metadata: checkpoint.Metadata{SessionID: file.SessionID, Agent: adapter.AgentType(), Kind: "live", CheckpointTranscriptStart: turns[0].LineStart}, Transcript: transcript.Bytes()},
+	}
+	result, err := importCodexWithInventory(context.Background(), root, source, anchor, "", false, inv)
+	if err != nil || result.SessionsScanned != 1 || result.TurnsSkipped != 1 || result.TurnsImported != 0 {
+		t.Fatalf("duplicate result: %+v, %v", result, err)
+	}
+	assertNoCheckpointWrites(t, root)
+}
+
+func TestImportHoldsDamagedOrPartialCoverageWithoutWriting(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		damaged bool
+	}{{"damaged inventory", true}, {"partial conflicting coverage", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			source, anchor := syntheticCodexSource(t, root)
+			full, err := os.ReadFile(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			adapter := agentimport.All()[0]
+			for _, candidate := range agentimport.All() {
+				if candidate.Name() == "codex" {
+					adapter = candidate
+					break
+				}
+			}
+			file := agentimport.SessionFile{Path: source, SessionID: "session-coverage-fixture"}
+			turns, err := adapter.SplitTurns(file, full)
+			if err != nil || len(turns) != 1 {
+				t.Fatalf("split: %d turns, %v", len(turns), err)
+			}
+			cid := id.MustCheckpointID("abcdef123456")
+			inv := syntheticCoverageInventory{info: checkpoint.CheckpointInfo{CheckpointID: cid}, summary: &checkpoint.CheckpointSummary{CheckpointID: cid, Sessions: []checkpoint.SessionFilePaths{{}}}}
+			if tc.damaged {
+				inv.readErr = errors.New("fixture read failure")
+			} else {
+				inv.content = &checkpoint.SessionContent{Metadata: checkpoint.Metadata{SessionID: file.SessionID, Agent: adapter.AgentType(), CheckpointTranscriptStart: turns[0].LineStart}, Transcript: []byte("different transcript\n")}
+			}
+			if _, err := importCodexWithInventory(context.Background(), root, source, anchor, "", false, inv); err == nil {
+				t.Fatal("unsafe import was not held")
+			}
+			assertNoCheckpointWrites(t, root)
+		})
+	}
+}
+
+func assertNoCheckpointWrites(t *testing.T, root string) {
+	t.Helper()
+	repo, err := git.PlainOpen(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	ctx := settings.WithWorktreeRoot(context.Background(), root)
+	stores, err := checkpoint.Open(ctx, repo, checkpoint.OpenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := stores.Persistent.List(ctx)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("checkpoint write occurred: %d items, %v", len(items), err)
+	}
 }
 
 func TestImportOldCodexSessionIntoDifferentRepository(t *testing.T) {
@@ -136,8 +278,12 @@ func TestVerifiedImportRejectsWrongSnapshotHashBeforeCheckpointWrite(t *testing.
 	root := t.TempDir()
 	source := filepath.Join(t.TempDir(), "source.jsonl")
 	contents := `{"type":"session_meta","payload":{"id":"verified-fixture"}}` + "\n" + `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fixture"}]}}` + "\n"
-	if err := os.WriteFile(source, []byte(contents), 0600); err != nil { t.Fatal(err) }
-	if _, err := ImportCodexVerified(context.Background(), root, source, strings.Repeat("0",40), strings.Repeat("0",64), false); err == nil { t.Fatal("mismatched expected hash accepted") }
+	if err := os.WriteFile(source, []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportCodexVerified(context.Background(), root, source, strings.Repeat("0", 40), strings.Repeat("0", 64), false); err == nil {
+		t.Fatal("mismatched expected hash accepted")
+	}
 }
 
 func TestImportedCheckpointSurvivesIsolatedGitRemoteAndFreshClone(t *testing.T) {

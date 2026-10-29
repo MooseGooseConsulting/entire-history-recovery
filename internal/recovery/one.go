@@ -13,9 +13,12 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/MooseGooseConsulting/entire-history-recovery/internal/reconcile"
 	"github.com/entireio/cli/cmd/entire/cli/agentimport"
+	cp "github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
+	"github.com/entireio/cli/redact"
 	git "github.com/go-git/go-git/v6"
 )
 
@@ -121,6 +124,13 @@ func ImportCodexVerified(ctx context.Context, repoRoot, source, anchor, expected
 }
 
 func importCodex(ctx context.Context, repoRoot, source, anchor, expectedSHA256 string, dryRun bool) (agentimport.Result, error) {
+	return importCodexWithInventory(ctx, repoRoot, source, anchor, expectedSHA256, dryRun, nil)
+}
+
+// importCodexWithInventory performs a local exact-coverage preflight before
+// delegating to Entire's importer. The reader seam is private and exists so
+// tests can prove that damaged inventories fail closed before any write.
+func importCodexWithInventory(ctx context.Context, repoRoot, source, anchor, expectedSHA256 string, dryRun bool, inventory reconcile.Reader) (agentimport.Result, error) {
 	var result agentimport.Result
 	if anchor == "" {
 		return result, errors.New("an explicit import display anchor is required")
@@ -168,9 +178,67 @@ func importCodex(ctx context.Context, repoRoot, source, anchor, expectedSHA256 s
 	if err := strategy.EnsureRedactionConfigured(ctx); err != nil {
 		return result, fmt.Errorf("configure redaction: %w", err)
 	}
+	if inventory == nil {
+		stores, err := cp.Open(ctx, repo, cp.OpenOptions{})
+		if err != nil {
+			return result, fmt.Errorf("open checkpoint inventory: %w", err)
+		}
+		inventory = stores.Persistent
+	}
+	present, turnCount, err := preflightExactCoverage(ctx, inventory, adapter, agentimport.SessionFile{Path: path, SessionID: sessionID}, full)
+	if err != nil {
+		return result, err
+	}
+	if present {
+		return agentimport.Result{SessionsScanned: 1, TurnsSkipped: turnCount}, nil
+	}
 	return agentimport.Run(ctx, repo, fixedSource{Importer: adapter, file: agentimport.SessionFile{Path: path, SessionID: sessionID}, digest: &digest}, agentimport.Options{
 		RepoRoot: root, Now: time.Now(), DryRun: dryRun, LinkCommitSHA: anchor,
 	})
+}
+
+// preflightExactCoverage suppresses duplicate imports only when every parsed
+// turn boundary is already represented by a byte-identical sanitized and
+// redacted transcript in this locally visible checkpoint inventory. Partial
+// or conflicting matches are held for later reconciliation. An unseen result
+// permits the importer to proceed only within this local prototype; it does
+// not establish remote/server completeness.
+func preflightExactCoverage(ctx context.Context, reader reconcile.Reader, adapter agentimport.Importer, file agentimport.SessionFile, full []byte) (bool, int, error) {
+	turns, err := adapter.SplitTurns(file, full)
+	if err != nil {
+		return false, 0, fmt.Errorf("split %s session %s for coverage: %w", adapter.Name(), file.SessionID, err)
+	}
+	if len(turns) == 0 {
+		return false, 0, nil
+	}
+	transcript, err := redact.JSONLBytes(cp.SanitizeTranscriptForAgentType(adapter.AgentType(), full))
+	if err != nil {
+		return false, 0, fmt.Errorf("prepare %s transcript for coverage: %w", file.SessionID, err)
+	}
+	records, err := reconcile.ReadVisible(ctx, reader)
+	if err != nil {
+		return false, 0, fmt.Errorf("read local checkpoint inventory: %w", err)
+	}
+	starts := make([]int, 0, len(turns))
+	for _, turn := range turns {
+		starts = append(starts, turn.LineStart)
+	}
+	assessment, err := reconcile.AssessExact(reconcile.Candidate{
+		SessionID:  file.SessionID,
+		Agent:      string(adapter.AgentType()),
+		Transcript: transcript.Bytes(),
+		Starts:     starts,
+	}, records)
+	if err != nil {
+		return false, 0, fmt.Errorf("assess local checkpoint coverage: %w", err)
+	}
+	if assessment.Status == "hold" {
+		return false, 0, fmt.Errorf("local checkpoint coverage requires reconciliation; refusing import (%s)", assessment.Reason)
+	}
+	if assessment.Status == "present" {
+		return true, len(turns), nil
+	}
+	return false, 0, nil
 }
 
 // Reject damaged or concatenated sessions before the upstream parser can skip
