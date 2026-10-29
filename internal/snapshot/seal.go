@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"time"
@@ -23,6 +25,48 @@ type Sealed struct {
 	SHA256    string
 	SessionID string
 	Bytes     int64
+}
+
+func DefaultDir() (string, error) {
+	base, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve user config directory: %w", err)
+	}
+	return filepath.Join(base, "entire-history-recovery", "snapshots"), nil
+}
+
+func EnsurePrivateDir(dir string) error {
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("create private directory: %w", err)
+	}
+	if err := os.Chmod(dir, 0700); err != nil {
+		return fmt.Errorf("restrict private directory: %w", err)
+	}
+	if os.PathSeparator != '\\' {
+		return nil
+	}
+	current, err := user.Current()
+	if err != nil || !strings.HasPrefix(current.Uid, "S-") {
+		return errors.New("cannot establish current Windows user SID")
+	}
+	grant := "*" + current.Uid + ":(OI)(CI)F"
+	if out, err := exec.Command("icacls", dir, "/inheritance:r", "/grant:r", grant).CombinedOutput(); err != nil {
+		return fmt.Errorf("set private Windows ACL: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	out, err := exec.Command("icacls", dir).CombinedOutput()
+	if err != nil {
+		return errors.New("cannot verify private Windows ACL")
+	}
+	acl := strings.ToLower(string(out))
+	for _, broad := range []string{"everyone", "authenticated users", "\\users:", "built-in\\users"} {
+		if strings.Contains(acl, broad) {
+			return fmt.Errorf("directory ACL includes broad principal %q", broad)
+		}
+	}
+	if !strings.Contains(acl, strings.ToLower(current.Username)) && !strings.Contains(acl, strings.ToLower(current.Uid)) {
+		return errors.New("private Windows ACL does not show current owner")
+	}
+	return nil
 }
 
 // SealCodex copies a user-selected inactive native transcript into dir.
@@ -45,8 +89,8 @@ func SealCodex(source, dir string, inactive bool) (Sealed, error) {
 	if !before.Mode().IsRegular() {
 		return Sealed{}, errors.New("source must be a regular file")
 	}
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return Sealed{}, fmt.Errorf("create private snapshot directory: %w", err)
+	if err := EnsurePrivateDir(dir); err != nil {
+		return Sealed{}, fmt.Errorf("secure snapshot directory: %w", err)
 	}
 	tmp, err := os.CreateTemp(dir, ".snapshot-*.tmp")
 	if err != nil {
