@@ -78,6 +78,9 @@ func importCommand(args []string) {
 	if len(digest) != 64 {
 		fail("snapshot filename does not contain a valid SHA-256", 2)
 	}
+	if err := snapshot.CheckPrivateDir(filepath.Dir(*source)); err != nil {
+		fail(err.Error(), 1)
+	}
 	if err := snapshot.Verify(*source, digest); err != nil {
 		fail(err.Error(), 1)
 	}

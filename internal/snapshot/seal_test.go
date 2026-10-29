@@ -42,9 +42,13 @@ func TestSealCodexCopiesExactBytesAndIsIdempotentlyNonOverwriting(t *testing.T) 
 		t.Fatal("matching existing snapshot was not safely reused")
 	}
 	entries, err := os.ReadDir(dir)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".snapshot-") { t.Fatal("temporary hard-link name remained after snapshot seal") }
+		if strings.HasPrefix(e.Name(), ".snapshot-") {
+			t.Fatal("temporary hard-link name remained after snapshot seal")
+		}
 	}
 	after, err := os.ReadFile(source)
 	if err != nil || string(after) != string(original) {
@@ -96,5 +100,47 @@ func TestVerifyRejectsTamperedSnapshot(t *testing.T) {
 	}
 	if err := Verify(snapshot.Path, snapshot.SHA256); err == nil {
 		t.Fatal("tampering accepted")
+	}
+}
+
+func TestVerifyRejectsSymlinkSnapshot(t *testing.T) {
+	source, _ := fixture(t)
+	snapshot, err := SealCodex(source, filepath.Join(t.TempDir(), "private"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(filepath.Dir(snapshot.Path), "linked.jsonl")
+	if err := os.Symlink(snapshot.Path, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := Verify(link, snapshot.SHA256); err == nil {
+		t.Fatal("snapshot symlink accepted")
+	}
+}
+
+func TestVerifySourceDigestRejectsSameSizeRewrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "source.jsonl")
+	original := []byte("first version")
+	if err := os.WriteFile(path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteAt([]byte("other version"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(original)
+	if err := verifySourceDigest(file, hex.EncodeToString(digest[:])); err == nil {
+		t.Fatal("same-size rewritten source accepted")
 	}
 }

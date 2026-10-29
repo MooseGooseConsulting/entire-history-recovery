@@ -56,6 +56,22 @@ func EnsurePrivateDir(dir string) error {
 	return verifyPrivateDirectory(dir)
 }
 
+// CheckPrivateDir verifies an existing directory without creating it or
+// changing its permissions. Import paths use this as a read-only trust gate.
+func CheckPrivateDir(dir string) error {
+	if dir == "" {
+		return errors.New("private directory path is required")
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("inspect private directory: %w", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("private directory must be a real directory")
+	}
+	return verifyPrivateDirectory(dir)
+}
+
 // SealCodex copies a user-selected inactive native transcript into dir.
 // inactive must be an explicit operator assertion. This function detects
 // changes during the copy but cannot prove a remote agent process is stopped;
@@ -102,11 +118,19 @@ func SealCodex(source, dir string, inactive bool) (Sealed, error) {
 	if err := tmp.Close(); err != nil {
 		return Sealed{}, fmt.Errorf("close snapshot: %w", err)
 	}
+	digest := hex.EncodeToString(h.Sum(nil))
+	if err := verifySourceDigest(src, digest); err != nil {
+		return Sealed{}, err
+	}
+	fdAfter, err := src.Stat()
+	if err != nil {
+		return Sealed{}, fmt.Errorf("restat opened source: %w", err)
+	}
 	after, err := os.Stat(source)
 	if err != nil {
 		return Sealed{}, fmt.Errorf("restat source: %w", err)
 	}
-	if !os.SameFile(before, after) || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) || before.Size() != n {
+	if !os.SameFile(before, fdAfter) || !os.SameFile(before, after) || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) || before.Size() != n {
 		return Sealed{}, errors.New("source changed during snapshot; discard and retry from a consistent inactive copy")
 	}
 	data, err := os.ReadFile(tmpName)
@@ -117,7 +141,6 @@ func SealCodex(source, dir string, inactive bool) (Sealed, error) {
 	if err != nil {
 		return Sealed{}, err
 	}
-	digest := hex.EncodeToString(h.Sum(nil))
 	if sum := sha256.Sum256(data); hex.EncodeToString(sum[:]) != digest {
 		return Sealed{}, errors.New("snapshot digest verification failed")
 	}
@@ -128,7 +151,7 @@ func SealCodex(source, dir string, inactive bool) (Sealed, error) {
 	// Hard-link publication is atomic and fails if the content-addressed name
 	// already exists; never overwrite an earlier sealed snapshot.
 	if err := os.Link(tmpName, final); err != nil {
-		if _, statErr := os.Stat(final); statErr == nil {
+		if _, statErr := os.Lstat(final); statErr == nil {
 			if verifyErr := Verify(final, digest); verifyErr != nil {
 				return Sealed{}, fmt.Errorf("existing content-addressed snapshot is corrupt: %w", verifyErr)
 			}
@@ -151,6 +174,13 @@ func SealCodex(source, dir string, inactive bool) (Sealed, error) {
 
 // Verify checks that an apply path still names the exact sealed snapshot.
 func Verify(path, digest string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("inspect sealed snapshot: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("sealed snapshot must be a regular file, not a symlink")
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read sealed snapshot: %w", err)
@@ -161,6 +191,20 @@ func Verify(path, digest string) error {
 	}
 	if _, err := validate(data); err != nil {
 		return err
+	}
+	return nil
+}
+
+func verifySourceDigest(src *os.File, expected string) error {
+	if _, err := src.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewind source for stability check: %w", err)
+	}
+	h := sha256.New()
+	if _, err := io.Copy(h, src); err != nil {
+		return fmt.Errorf("rehash opened source: %w", err)
+	}
+	if hex.EncodeToString(h.Sum(nil)) != expected {
+		return errors.New("source changed during snapshot; discard and retry from a consistent inactive copy")
 	}
 	return nil
 }
