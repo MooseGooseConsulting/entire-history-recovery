@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -614,6 +615,7 @@ func runPrivateCohortChild(t *testing.T, manifest, expectedManifestDigest, root,
 		t.Fatal("stored count does not match successful imports")
 	}
 	seenIDs := map[string]bool{}
+	renderedSessions := map[string]bool{}
 	for _, item := range items {
 		c, err := stores.Persistent.ReadSessionContent(ctx, item.CheckpointID, 0)
 		if err != nil || c.Metadata.SessionID == "" || string(c.Metadata.Agent) != "Codex" || len(c.Transcript) == 0 {
@@ -636,10 +638,34 @@ func runPrivateCohortChild(t *testing.T, manifest, expectedManifestDigest, root,
 		if c.Metadata.Model != "" {
 			models++
 		}
+		if mode == "initial" && os.Getenv("RECOVERY_TEST_NATIVE_RENDER") == "1" && !renderedSessions[c.Metadata.SessionID] && strings.TrimSpace(c.Prompts) != "" {
+			cmd := exec.Command("entire", "checkpoint", "explain", "--checkpoint", string(item.CheckpointID), "--full", "--no-pager")
+			cmd.Dir = root
+			rendered, err := cmd.Output()
+			if err != nil {
+				t.Fatal("native Entire full-render command failed")
+			}
+			// Compare a bounded, whitespace-normalized fragment of the stored
+			// redacted prompt. Never log source or rendered conversation content.
+			prompt := []rune(strings.Join(strings.Fields(c.Prompts), " "))
+			if len(prompt) > 80 {
+				prompt = prompt[:80]
+			}
+			view := strings.Join(strings.Fields(string(rendered)), " ")
+			if strings.Contains(view, string(prompt)) && renderedAssistantContentMatches(view, c.Transcript) {
+				renderedSessions[c.Metadata.SessionID] = true
+			}
+		}
 	}
 	if len(seenIDs) != len(sources) {
 		_ = repo.Close()
 		t.Fatal("not all source sessions read back")
+	}
+	if mode == "initial" && os.Getenv("RECOVERY_TEST_NATIVE_RENDER") == "1" {
+		if len(renderedSessions) != len(sources) {
+			t.Fatalf("native Entire rendered a source-backed prompt and assistant output for %d of %d sessions", len(renderedSessions), len(sources))
+		}
+		t.Logf("native Entire rendered source-backed prompt and assistant output for %d sessions", len(renderedSessions))
 	}
 	for _, boundaries := range expectedBoundaries {
 		if len(boundaries) != 0 {
@@ -685,6 +711,45 @@ func runPrivateCohortChild(t *testing.T, manifest, expectedManifestDigest, root,
 		}
 	}
 	t.Logf("private cohort %s passed: %d sessions, %d stored checkpoints, %d model-bearing records; original sources unchanged", mode, len(sources), len(items), models)
+}
+
+// renderedAssistantContentMatches checks actual stored, sanitized assistant
+// text rather than treating the presence of a role label as content proof.
+func renderedAssistantContentMatches(view string, transcript []byte) bool {
+	marker := strings.Index(view, "[Assistant]")
+	if marker < 0 {
+		return false
+	}
+	view = view[marker+len("[Assistant]"):]
+	for _, line := range strings.Split(string(transcript), "\n") {
+		var row struct {
+			Type    string `json:"type"`
+			Payload struct {
+				Type    string `json:"type"`
+				Role    string `json:"role"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"payload"`
+		}
+		if json.Unmarshal([]byte(line), &row) != nil || row.Type != "response_item" || row.Payload.Type != "message" || row.Payload.Role != "assistant" {
+			continue
+		}
+		for _, content := range row.Payload.Content {
+			if content.Type != "output_text" {
+				continue
+			}
+			fragment := []rune(strings.Join(strings.Fields(content.Text), " "))
+			if len(fragment) > 80 {
+				fragment = fragment[:80]
+			}
+			if len(fragment) > 0 && strings.Contains(view, string(fragment)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func TestCompareNativePromptsCountsMultiplicity(t *testing.T) {
