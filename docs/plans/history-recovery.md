@@ -10,7 +10,7 @@ User decisions from the October 29 conversation:
 
 - Build and prove ingestion before searching all machines. Do not substitute repeated stock `entire import` calls for recovery tooling.
 - Missing original checkouts are a required case. A replacement clone is a destination, not a prerequisite for finding a source.
-- Use Windows now, where Entire is authenticated; SER10 remains a useful Linux execution/test host. Neither host's auth failure blocks independent work on the other.
+- Use Windows now, where Entire is authenticated; Linux remains a useful second execution and test platform. Neither host's auth failure blocks independent work on the other.
 - Keep tools, synthetic fixtures and sanitized docs in this public repo; real transcripts, manifests and credentials remain private.
 - Deliver stacked **non-draft** PRs. Delegate bounded implementation tasks to subagents and have an independent trailing reviewer triage automated and subagent findings against the actual code. Fix valid findings, verify the fixes and inspect required checks before merging. Do not merge just because a PR was created.
 - Use a small number of behavior-focused tests over 10-20 actual conversations/sessions. Keep the private cohort fixed and test the externally observable recovery result, including actual write retries; do not inflate coverage with many tests that repeat implementation details.
