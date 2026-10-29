@@ -33,6 +33,14 @@ different boundaries remains separate. Different redaction versions, partial
 snapshots, compacted exports and native event alignment require the later
 reconciliation layer; this helper deliberately holds instead of guessing.
 
+The recovery adapter uses Entire's `transcript.IsInjectedPrompt` classifier to
+exclude injected Codex preambles from prompt metadata while preserving the
+complete source transcript. If a session contains only injected user-side
+context but includes assistant or tool work, it writes one evidence checkpoint
+with an empty prompt and the first original turn's boundary. It skips injected
+context without assistant/tool work. Import counts therefore measure checkpoint
+turn records, not human-authored prompts.
+
 The Entire API's ingest/index state is not covered by Git inventory. This
 prototype does not claim service-wide absence, complete server ingestion, or
 cloud deduplication. `unseen` is not proof that no server-only record exists.

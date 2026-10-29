@@ -19,6 +19,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
 	"github.com/entireio/cli/redact"
+	transcriptlib "github.com/entireio/cli/transcript"
 	git "github.com/go-git/go-git/v6"
 )
 
@@ -103,7 +104,49 @@ func (s fixedSource) SplitTurns(file agentimport.SessionFile, full []byte) ([]ag
 			}
 		}
 	}
-	return turns, nil
+	return normalizeCodexTurns(turns, full), nil
+}
+
+// normalizeCodexTurns excludes agent-injected user-role preambles from turn
+// metadata while leaving the source transcript intact. If that removes every
+// turn but the transcript contains assistant/tool work, keep one evidence
+// checkpoint with the first original turn's identity and boundary but no
+// claimed user prompt.
+func normalizeCodexTurns(turns []agentimport.Turn, full []byte) []agentimport.Turn {
+	filtered := make([]agentimport.Turn, 0, len(turns))
+	for _, turn := range turns {
+		if !transcriptlib.IsInjectedPrompt(turn.Prompt) {
+			filtered = append(filtered, turn)
+		}
+	}
+	if len(filtered) > 0 || len(turns) == 0 || !hasCodexAssistantOrToolWork(full) {
+		return filtered
+	}
+	evidence := turns[0]
+	evidence.Prompt = ""
+	return []agentimport.Turn{evidence}
+}
+
+func hasCodexAssistantOrToolWork(full []byte) bool {
+	for _, line := range bytes.Split(full, []byte{'\n'}) {
+		var event struct {
+			Type    string `json:"type"`
+			Payload struct {
+				Type string `json:"type"`
+				Role string `json:"role"`
+			} `json:"payload"`
+		}
+		if json.Unmarshal(line, &event) != nil || event.Type != "response_item" {
+			continue
+		}
+		if event.Payload.Type == "message" && event.Payload.Role == "assistant" {
+			return true
+		}
+		if event.Payload.Type == "function_call" || event.Payload.Type == "function_call_output" {
+			return true
+		}
+	}
+	return false
 }
 
 // ImportCodex is a local-only prototype. The caller must establish that the
@@ -197,7 +240,7 @@ func importCodexWithInventory(ctx context.Context, repoRoot, source, anchor, exp
 }
 
 func preflightConfiguredStorage(ctx context.Context, root string, repo *git.Repository, adapter agentimport.Importer, file agentimport.SessionFile, full []byte) (bool, int, error) {
-	turns, err := adapter.SplitTurns(file, full)
+	turns, err := (fixedSource{Importer: adapter, file: file}).SplitTurns(file, full)
 	if err != nil {
 		return false, 0, fmt.Errorf("split %s session %s for coverage: %w", adapter.Name(), file.SessionID, err)
 	}
@@ -240,7 +283,7 @@ func preflightConfiguredStorage(ctx context.Context, root string, repo *git.Repo
 // permits the importer to proceed only within this local prototype; it does
 // not establish remote/server completeness.
 func preflightExactCoverage(ctx context.Context, reader reconcile.Reader, adapter agentimport.Importer, file agentimport.SessionFile, full []byte) (bool, int, error) {
-	turns, err := adapter.SplitTurns(file, full)
+	turns, err := (fixedSource{Importer: adapter, file: file}).SplitTurns(file, full)
 	if err != nil {
 		return false, 0, fmt.Errorf("split %s session %s for coverage: %w", adapter.Name(), file.SessionID, err)
 	}
