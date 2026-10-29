@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/MooseGooseConsulting/entire-history-recovery/internal/reconcile"
+	"github.com/MooseGooseConsulting/entire-history-recovery/internal/snapshot"
 	cp "github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	remotegit "github.com/entireio/cli/cmd/entire/cli/checkpoint/remote"
@@ -55,6 +56,9 @@ func WithInventoryWorkspace(ctx context.Context, workspace string) (context.Cont
 	}
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return nil, errors.New("inventory workspace must be a real directory")
+	}
+	if err := snapshot.CheckPrivateDir(abs); err != nil {
+		return nil, errors.New("inventory workspace must be private")
 	}
 	return context.WithValue(ctx, inventoryWorkspaceContextKey{}, abs), nil
 }
