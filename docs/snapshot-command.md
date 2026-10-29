@@ -18,6 +18,13 @@ source identity/stat/digest around copying, and publishes a content-addressed
 read-only copy without overwriting another snapshot. The original stays unchanged.
 Multiple session headers are held until that source format is understood.
 
+This experimental path accepts at most **64 MiB per snapshot**. Intake and
+verification reject larger input, including a file growing beyond the limit;
+they never truncate it. Larger sessions need a streaming adapter before this
+path can recover them. Normal interrupt cancellation stops intake and runs
+temporary-file cleanup; a forced process kill or host crash can still leave a
+private staging file and is not a completed snapshot.
+
 The default destination is `entire-history-recovery` under the user config
 directory. A new private directory is restricted to its owner on Unix and to the
 current user, SYSTEM and Administrators on Windows. Existing directories are

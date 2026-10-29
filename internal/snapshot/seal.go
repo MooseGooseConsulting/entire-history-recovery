@@ -170,6 +170,9 @@ func SealCodexContext(ctx context.Context, source, dir string, inactive bool) (S
 	if strings.ContainsAny(sid, `/\\`) {
 		return Sealed{}, errors.New("invalid session ID")
 	}
+	if err := ctx.Err(); err != nil {
+		return Sealed{}, err
+	}
 	final := filepath.Join(dir, digest+".jsonl")
 	// Hard-link publication is atomic and fails if the content-addressed name
 	// already exists; never overwrite an earlier sealed snapshot.
