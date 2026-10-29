@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -270,6 +271,163 @@ func TestPrivateHistoricalSession(t *testing.T) {
 		evidence := CompareNativePrompts(before, turns)
 		t.Logf("import units: %d; native completed user messages: %d; text overlaps: %d", evidence.ImporterUnits, evidence.NativeMessages, evidence.TextMatches)
 	}
+}
+
+// TestPrivateCodexCohortProcessIsolated imports a private manifest in a child
+// process so Windows releases upstream git handles before the parent removes it.
+func TestPrivateCodexCohortProcessIsolated(t *testing.T) {
+	manifest := os.Getenv("RECOVERY_TEST_CODEX_MANIFEST")
+	if manifest == "" {
+		t.Skip("no private cohort manifest selected")
+	}
+	if os.Getenv("RECOVERY_COHORT_CHILD") != "" {
+		runPrivateCohortChild(t, manifest, os.Getenv("RECOVERY_COHORT_DEST"), os.Getenv("RECOVERY_COHORT_MODE"))
+		return
+	}
+	paths, err := os.ReadFile(manifest)
+	if err != nil {
+		t.Fatal("cannot read private cohort manifest")
+	}
+	count := 0
+	seen := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(string(paths)), "\n") {
+		p := strings.TrimSuffix(strings.TrimSpace(line), "\r")
+		if p == "" {
+			continue
+		}
+		if seen[p] {
+			t.Fatal("cohort repeats source path")
+		}
+		seen[p] = true
+		count++
+	}
+	if count < 10 || count > 20 {
+		t.Fatalf("cohort size outside 10-20: %d", count)
+	}
+	root := t.TempDir()
+	for _, mode := range []string{"initial", "retry"} {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestPrivateCodexCohortProcessIsolated$")
+		cmd.Env = append(os.Environ(), "RECOVERY_COHORT_CHILD=1", "RECOVERY_COHORT_DEST="+root, "RECOVERY_COHORT_MODE="+mode)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("private cohort %s process failed: %v: %s", mode, err, out)
+		}
+	}
+}
+
+func runPrivateCohortChild(t *testing.T, manifest, root, mode string) {
+	t.Helper()
+	paths, err := os.ReadFile(manifest)
+	if err != nil {
+		t.Fatal("cannot read cohort manifest")
+	}
+	var sources []string
+	for _, line := range strings.Split(strings.TrimSpace(string(paths)), "\n") {
+		p := strings.TrimSuffix(strings.TrimSpace(line), "\r")
+		if p != "" {
+			sources = append(sources, p)
+		}
+	}
+	if mode == "initial" {
+		if err := os.MkdirAll(root, 0700); err != nil {
+			t.Fatal("create private destination")
+		}
+		for _, args := range [][]string{{"init", "--quiet"}, {"-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "--allow-empty", "-m", "private cohort destination"}} {
+			cmd := exec.Command("git", args...)
+			cmd.Dir = root
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("prepare destination: %v: %s", err, out)
+			}
+		}
+	}
+	anchor := destinationHead(t, root)
+	total, models := 0, 0
+	sessionIDs := map[string]bool{}
+	hashes := make([][32]byte, len(sources))
+	want := make([]int, len(sources))
+	for i, source := range sources {
+		before, err := os.ReadFile(source)
+		if err != nil {
+			t.Fatalf("source %d unavailable", i)
+		}
+		hashes[i] = sha256.Sum256(before)
+		id, err := validateCodexSnapshot(before)
+		if err != nil {
+			t.Fatalf("source %d invalid", i)
+		}
+		if sessionIDs[id] {
+			t.Fatalf("duplicate session identity at item %d", i)
+		}
+		sessionIDs[id] = true
+		result, err := ImportCodex(context.Background(), root, source, anchor, mode == "retry")
+		if err != nil {
+			t.Fatalf("source %d import failed", i)
+		}
+		if mode == "initial" {
+			if result.SessionsScanned != 1 || result.TurnsImported == 0 {
+				t.Fatalf("source %d not imported", i)
+			}
+			want[i] = result.TurnsImported
+			total += result.TurnsImported
+		} else if result.TurnsImported != 0 || result.TurnsSkipped == 0 {
+			t.Fatalf("source %d retry duplicated or skipped nothing", i)
+		}
+	}
+	repo, err := git.PlainOpen(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := settings.WithWorktreeRoot(context.Background(), root)
+	stores, err := checkpoint.Open(ctx, repo, checkpoint.OpenOptions{})
+	if err != nil {
+		_ = repo.Close()
+		t.Fatal(err)
+	}
+	items, err := stores.Persistent.List(ctx)
+	if err != nil || len(items) == 0 {
+		_ = repo.Close()
+		t.Fatal("checkpoint readback unavailable")
+	}
+	seenIDs := map[string]bool{}
+	for _, item := range items {
+		c, err := stores.Persistent.ReadSessionContent(ctx, item.CheckpointID, 0)
+		if err != nil || c.Metadata.SessionID == "" || string(c.Metadata.Agent) != "Codex" || len(c.Transcript) == 0 {
+			_ = repo.Close()
+			t.Fatal("checkpoint metadata/content unavailable")
+		}
+		seenIDs[c.Metadata.SessionID] = true
+		if c.Metadata.Model != "" {
+			models++
+		}
+	}
+	if len(seenIDs) != len(sources) {
+		_ = repo.Close()
+		t.Fatal("not all source sessions read back")
+	}
+	if err := repo.Close(); err != nil {
+		t.Fatal("close reader")
+	}
+	countPath := filepath.Join(root, "cohort-checkpoint-count")
+	if mode == "initial" {
+		if err := os.WriteFile(countPath, []byte(strconv.Itoa(len(items))), 0600); err != nil {
+			t.Fatal("record local checkpoint count")
+		}
+	} else {
+		wantBytes, err := os.ReadFile(countPath)
+		if err != nil {
+			t.Fatal("initial checkpoint count unavailable")
+		}
+		wantCount, err := strconv.Atoi(strings.TrimSpace(string(wantBytes)))
+		if err != nil || len(items) != wantCount {
+			t.Fatal("retry changed the checkpoint count")
+		}
+	}
+	for i, source := range sources {
+		after, err := os.ReadFile(source)
+		if err != nil || sha256.Sum256(after) != hashes[i] {
+			t.Fatalf("source %d changed", i)
+		}
+	}
+	t.Logf("private cohort %s passed: %d sessions, %d stored checkpoints, %d model-bearing records; original sources unchanged", mode, len(sources), len(items), models)
 }
 
 func TestCompareNativePromptsCountsMultiplicity(t *testing.T) {
