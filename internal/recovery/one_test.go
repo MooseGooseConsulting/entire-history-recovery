@@ -3,6 +3,7 @@ package recovery
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -290,7 +291,7 @@ func TestPrivateCodexCohortProcessIsolated(t *testing.T) {
 		t.Skip("no private cohort manifest selected")
 	}
 	if os.Getenv("RECOVERY_COHORT_CHILD") != "" {
-		runPrivateCohortChild(t, manifest, os.Getenv("RECOVERY_COHORT_DEST"), os.Getenv("RECOVERY_COHORT_MODE"))
+		runPrivateCohortChild(t, manifest, os.Getenv("RECOVERY_COHORT_MANIFEST_SHA256"), os.Getenv("RECOVERY_COHORT_DEST"), os.Getenv("RECOVERY_COHORT_MODE"))
 		return
 	}
 	paths, err := os.ReadFile(manifest)
@@ -299,6 +300,7 @@ func TestPrivateCodexCohortProcessIsolated(t *testing.T) {
 	}
 	count := 0
 	seen := map[string]bool{}
+	var normalized strings.Builder
 	for _, line := range strings.Split(strings.TrimSpace(string(paths)), "\n") {
 		p := strings.TrimSuffix(strings.TrimSpace(line), "\r")
 		if p == "" {
@@ -307,29 +309,73 @@ func TestPrivateCodexCohortProcessIsolated(t *testing.T) {
 		if seen[p] {
 			t.Fatal("cohort repeats source path")
 		}
+		contents, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("cohort source %d unavailable", count)
+		}
+		sessionID, err := validateCodexSnapshot(contents)
+		if err != nil {
+			t.Fatalf("cohort source %d invalid", count)
+		}
+		if seen["session:"+sessionID] {
+			t.Fatalf("cohort repeats native session identity at item %d", count)
+		}
+		seen["session:"+sessionID] = true
 		seen[p] = true
+		normalized.WriteString(p)
+		normalized.WriteByte('\n')
 		count++
 	}
 	if count < 10 || count > 20 {
 		t.Fatalf("cohort size outside 10-20: %d", count)
 	}
 	root := t.TempDir()
+	globalConfig := filepath.Join(root, "empty.gitconfig")
+	if err := os.WriteFile(globalConfig, nil, 0600); err != nil {
+		t.Fatal("create empty global Git config")
+	}
+	hooksPath := filepath.Join(root, "empty-hooks")
+	if err := os.Mkdir(hooksPath, 0700); err != nil {
+		t.Fatal("create empty Git hooks directory")
+	}
+	privateManifest := filepath.Join(root, "sources.manifest")
+	manifestBytes := []byte(normalized.String())
+	if err := os.WriteFile(privateManifest, manifestBytes, 0400); err != nil {
+		t.Fatal("seal normalized private manifest")
+	}
+	manifestHash := sha256.Sum256(manifestBytes)
+	manifestDigest := hex.EncodeToString(manifestHash[:])
 	for _, mode := range []string{"initial", "retry"} {
 		cmd := exec.Command(os.Args[0], "-test.run=^TestPrivateCodexCohortProcessIsolated$", "-test.v")
-		cmd.Env = append(os.Environ(), "RECOVERY_COHORT_CHILD=1", "RECOVERY_COHORT_DEST="+root, "RECOVERY_COHORT_MODE="+mode)
+		cmd.Env = replaceEnv(os.Environ(), map[string]string{
+			"RECOVERY_COHORT_CHILD":           "1",
+			"RECOVERY_TEST_CODEX_MANIFEST":    privateManifest,
+			"RECOVERY_COHORT_MANIFEST_SHA256": manifestDigest,
+			"RECOVERY_COHORT_DEST":            root,
+			"RECOVERY_COHORT_MODE":            mode,
+			"RECOVERY_TEST_EMPTY_GIT_CONFIG":  globalConfig,
+			"RECOVERY_TEST_EMPTY_GIT_HOOKS":   hooksPath,
+		})
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("private cohort %s process failed: %v: %s", mode, err, out)
 		} else {
 			t.Logf("%s", out)
 		}
 	}
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatalf("parent could not remove the exact cohort temporary directory after child exit: %v", err)
+	}
 }
 
-func runPrivateCohortChild(t *testing.T, manifest, root, mode string) {
+func runPrivateCohortChild(t *testing.T, manifest, expectedManifestDigest, root, mode string) {
 	t.Helper()
 	paths, err := os.ReadFile(manifest)
 	if err != nil {
 		t.Fatal("cannot read cohort manifest")
+	}
+	digest := sha256.Sum256(paths)
+	if hex.EncodeToString(digest[:]) != expectedManifestDigest {
+		t.Fatal("private manifest changed after parent validation")
 	}
 	var sources []string
 	for _, line := range strings.Split(strings.TrimSpace(string(paths)), "\n") {
@@ -342,19 +388,14 @@ func runPrivateCohortChild(t *testing.T, manifest, root, mode string) {
 		if err := os.MkdirAll(root, 0700); err != nil {
 			t.Fatal("create private destination")
 		}
-		for _, args := range [][]string{{"init", "--quiet"}, {"-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "--allow-empty", "-m", "private cohort destination"}} {
-			cmd := exec.Command("git", args...)
-			cmd.Dir = root
-			if out, err := cmd.CombinedOutput(); err != nil {
-				t.Fatalf("prepare destination: %v: %s", err, out)
-			}
-		}
+		runHermeticGitFixture(t, root, "init", "--quiet")
+		runHermeticGitFixture(t, root, "commit", "--quiet", "--allow-empty", "-m", "private cohort destination")
 	}
 	anchor := destinationHead(t, root)
 	total, models := 0, 0
 	sessionIDs := map[string]bool{}
 	expectedContent := map[string][32]byte{}
-	expectedBoundaries := map[string]map[int]bool{}
+	expectedBoundaries := map[string]map[int]string{}
 	var adapter agentimport.Importer
 	for _, available := range agentimport.All() {
 		if available.Name() == "codex" {
@@ -379,16 +420,16 @@ func runPrivateCohortChild(t *testing.T, manifest, root, mode string) {
 			t.Fatalf("duplicate session identity at item %d", i)
 		}
 		sessionIDs[id] = true
-		turns, err := adapter.SplitTurns(agentimport.SessionFile{SessionID: id}, before)
+		turns, err := (fixedSource{Importer: adapter}).SplitTurns(agentimport.SessionFile{SessionID: id}, before)
 		if err != nil {
 			t.Fatalf("source %d boundaries unavailable", i)
 		}
-		expectedBoundaries[id] = map[int]bool{}
+		expectedBoundaries[id] = map[int]string{}
 		for _, turn := range turns {
 			if _, duplicate := expectedBoundaries[id][turn.LineStart]; duplicate {
 				t.Fatal("source parser repeated a boundary")
 			}
-			expectedBoundaries[id][turn.LineStart] = false
+			expectedBoundaries[id][turn.LineStart] = turn.Model
 		}
 		result, err := ImportCodex(context.Background(), root, source, anchor, false)
 		if err != nil {
@@ -438,10 +479,14 @@ func runPrivateCohortChild(t *testing.T, manifest, root, mode string) {
 			t.Fatal("stored transcript does not match expected sanitized source")
 		}
 		boundaries := expectedBoundaries[c.Metadata.SessionID]
-		if seen, exists := boundaries[c.Metadata.CheckpointTranscriptStart]; !exists || seen {
+		expectedModel, exists := boundaries[c.Metadata.CheckpointTranscriptStart]
+		if !exists {
 			t.Fatal("unexpected or duplicate stored boundary")
 		}
-		boundaries[c.Metadata.CheckpointTranscriptStart] = true
+		delete(boundaries, c.Metadata.CheckpointTranscriptStart)
+		if c.Metadata.Model != expectedModel {
+			t.Fatal("stored model does not match native task evidence, including unknown values")
+		}
 		if c.Metadata.Model != "" {
 			models++
 		}
@@ -451,10 +496,8 @@ func runPrivateCohortChild(t *testing.T, manifest, root, mode string) {
 		t.Fatal("not all source sessions read back")
 	}
 	for _, boundaries := range expectedBoundaries {
-		for _, seen := range boundaries {
-			if !seen {
-				t.Fatal("source boundary missing from readback")
-			}
+		if len(boundaries) != 0 {
+			t.Fatal("source boundary missing from readback")
 		}
 	}
 	if err := repo.Close(); err != nil {
