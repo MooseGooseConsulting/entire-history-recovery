@@ -123,10 +123,14 @@ func (s fixedSource) SplitTurns(file agentimport.SessionFile, full []byte) ([]ag
 }
 
 // ImportCodex is a local-only prototype. The caller must establish that the
-// selected session belongs to repoRoot before calling it. This deliberately
-// does not expose a production command or push any checkpoint data.
-func ImportCodex(ctx context.Context, repoRoot, source string, dryRun bool) (agentimport.Result, error) {
+// selected session belongs to repoRoot before calling it. anchor is Entire's
+// display anchor, not commit attribution; the caller must select it explicitly.
+// This does not expose a production command or push checkpoint data.
+func ImportCodex(ctx context.Context, repoRoot, source, anchor string, dryRun bool) (agentimport.Result, error) {
 	var result agentimport.Result
+	if anchor == "" {
+		return result, errors.New("an explicit import display anchor is required")
+	}
 	root, err := filepath.Abs(repoRoot)
 	if err != nil {
 		return result, err
@@ -169,15 +173,11 @@ func ImportCodex(ctx context.Context, repoRoot, source string, dryRun bool) (age
 		return result, fmt.Errorf("open destination repository: %w", err)
 	}
 	defer repo.Close()
-	head, err := repo.Head()
-	if err != nil {
-		return result, fmt.Errorf("resolve destination HEAD: %w", err)
-	}
 	ctx = settings.WithWorktreeRoot(ctx, root)
 	if err := strategy.EnsureRedactionConfigured(ctx); err != nil {
 		return result, fmt.Errorf("configure redaction: %w", err)
 	}
 	return agentimport.Run(ctx, repo, fixedSource{Importer: adapter, file: agentimport.SessionFile{Path: path, SessionID: header.Payload.ID}}, agentimport.Options{
-		RepoRoot: root, Now: time.Now(), DryRun: dryRun, LinkCommitSHA: head.Hash().String(),
+		RepoRoot: root, Now: time.Now(), DryRun: dryRun, LinkCommitSHA: anchor,
 	})
 }

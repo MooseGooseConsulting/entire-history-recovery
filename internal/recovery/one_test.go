@@ -16,6 +16,20 @@ import (
 	git "github.com/go-git/go-git/v6"
 )
 
+func destinationHead(t *testing.T, root string) string {
+	t.Helper()
+	repo, err := git.PlainOpen(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	head, err := repo.Head()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return head.Hash().String()
+}
+
 func TestImportOldCodexSessionIntoDifferentRepository(t *testing.T) {
 	root := t.TempDir()
 	run := func(args ...string) {
@@ -45,11 +59,12 @@ func TestImportOldCodexSessionIntoDifferentRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	preview, err := ImportCodex(ctx, root, source, true)
+	anchor := destinationHead(t, root)
+	preview, err := ImportCodex(ctx, root, source, anchor, true)
 	if err != nil || preview.SessionsScanned != 1 || preview.TurnsImported != 1 {
 		t.Fatalf("preview: %+v, %v", preview, err)
 	}
-	result, err := ImportCodex(ctx, root, source, false)
+	result, err := ImportCodex(ctx, root, source, anchor, false)
 	if err != nil || result.SessionsScanned != 1 || result.TurnsImported != 1 {
 		t.Fatalf("import: %+v, %v", result, err)
 	}
@@ -96,13 +111,19 @@ func TestImportOldCodexSessionIntoDifferentRepository(t *testing.T) {
 	if !strings.Contains(string(data.Transcript), "fixture question") || !strings.Contains(string(data.Transcript), "fixture answer") {
 		t.Fatal("stored transcript lost content")
 	}
-	again, err := ImportCodex(ctx, root, source, false)
+	again, err := ImportCodex(ctx, root, source, anchor, false)
 	if err != nil || again.TurnsImported != 0 || again.TurnsSkipped != 1 {
 		t.Fatalf("repeat: %+v, %v", again, err)
 	}
 	after, err := os.ReadFile(source)
 	if err != nil || string(after) != contents {
 		t.Fatal("source changed")
+	}
+}
+
+func TestImportRequiresExplicitDisplayAnchor(t *testing.T) {
+	if _, err := ImportCodex(context.Background(), t.TempDir(), "unused", "", true); err == nil {
+		t.Fatal("missing anchor accepted")
 	}
 }
 
@@ -128,7 +149,8 @@ func TestPrivateHistoricalSession(t *testing.T) {
 			t.Fatal("could not prepare isolated repository")
 		}
 	}
-	result, err := ImportCodex(context.Background(), root, source, false)
+	anchor := destinationHead(t, root)
+	result, err := ImportCodex(context.Background(), root, source, anchor, false)
 	if err != nil {
 		t.Fatal("private session import failed")
 	}
@@ -159,7 +181,7 @@ func TestPrivateHistoricalSession(t *testing.T) {
 			models++
 		}
 	}
-	second, err := ImportCodex(context.Background(), root, source, false)
+	second, err := ImportCodex(context.Background(), root, source, anchor, false)
 	if err != nil || second.TurnsImported != 0 || second.TurnsSkipped != result.TurnsImported {
 		t.Fatal("repeat import was not idempotent")
 	}
@@ -313,7 +335,7 @@ func TestHeaderWithoutNewline(t *testing.T) {
 	if err := os.WriteFile(source, []byte(`{"type":"session_meta","payload":{"id":"valid-header"}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	result, err := ImportCodex(context.Background(), root, source, true)
+	result, err := ImportCodex(context.Background(), root, source, destinationHead(t, root), true)
 	if err != nil || result.SessionsScanned != 1 || result.TurnsImported != 0 {
 		t.Fatalf("header-only preview: %+v, %v", result, err)
 	}
