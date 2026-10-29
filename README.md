@@ -6,4 +6,6 @@ Start with the [project goals](GOALS.md) and the authoritative [implementation a
 
 The dated [live import acceptance record](docs/live-import-acceptance.md) describes what has been verified and when those checks must be repeated.
 
+For implementation evidence, see the [one-session prototype](docs/one-session-prototype.md), [existing-coverage contract](docs/existing-coverage.md), and [server inventory boundary](docs/server-inventory-boundary.md). These describe verified behavior and limits; the rollout plan tracks remaining work.
+
 This public repository is for source code, synthetic fixtures, and sanitized documentation. Keep private transcripts, credentials, inventories, and recovery manifests outside it.
