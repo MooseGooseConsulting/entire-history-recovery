@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -30,7 +32,7 @@ func TestImportSubprocessCleansInventoryWorkspace(t *testing.T) {
 		{name: "failed remote listing", listingOK: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
+			root := shortPrivateTestRoot(t)
 			snapshotDir := filepath.Join(root, "private-snapshots")
 			if err := snapshot.EnsurePrivateDir(snapshotDir); err != nil {
 				t.Fatal(err)
@@ -162,4 +164,31 @@ func runGit(t *testing.T, dir string, args ...string) []byte {
 		t.Fatalf("git %v: %v: %s", args, err, out)
 	}
 	return out
+}
+
+func shortPrivateTestRoot(t *testing.T) string {
+	t.Helper()
+	for range 5 {
+		suffix := make([]byte, 8)
+		if _, err := rand.Read(suffix); err != nil {
+			t.Fatal("generate private test directory name")
+		}
+		root := filepath.Join(os.TempDir(), "ri-"+hex.EncodeToString(suffix))
+		if _, err := os.Lstat(root); err == nil {
+			continue
+		} else if !os.IsNotExist(err) {
+			t.Fatal("inspect private test directory")
+		}
+		if err := snapshot.EnsurePrivateDir(root); err != nil {
+			t.Fatal("create private test directory")
+		}
+		t.Cleanup(func() {
+			if err := os.RemoveAll(root); err != nil {
+				t.Errorf("remove private test directory: %v", err)
+			}
+		})
+		return root
+	}
+	t.Fatal("could not allocate unique private test directory")
+	return ""
 }

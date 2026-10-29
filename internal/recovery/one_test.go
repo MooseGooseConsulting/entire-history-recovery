@@ -75,7 +75,7 @@ func syntheticCodexSource(t *testing.T, root string) (string, string) {
 {"timestamp":"2020-01-01T00:00:02Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"fixture answer"}]}}
 {"timestamp":"2020-01-01T00:00:03Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"fixture-turn"}}
 `
-	source := filepath.Join(t.TempDir(), "source.jsonl")
+	source := filepath.Join(testTempDir(t), "source.jsonl")
 	if err := os.WriteFile(source, []byte(contents), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func syntheticCodexSource(t *testing.T, root string) (string, string) {
 }
 
 func TestImportSkipsExactCoverageUnderDifferentCheckpointID(t *testing.T) {
-	root := t.TempDir()
+	root := testTempDir(t)
 	source, anchor := syntheticCodexSource(t, root)
 	full, err := os.ReadFile(source)
 	if err != nil {
@@ -111,7 +111,7 @@ func TestImportSkipsExactCoverageUnderDifferentCheckpointID(t *testing.T) {
 		summary: &checkpoint.CheckpointSummary{CheckpointID: cid, Sessions: []checkpoint.SessionFilePaths{{}}},
 		content: &checkpoint.SessionContent{Metadata: checkpoint.Metadata{SessionID: file.SessionID, Agent: adapter.AgentType(), Kind: "live", CheckpointTranscriptStart: turns[0].LineStart}, Transcript: transcript.Bytes()},
 	}
-	result, err := importCodexWithInventory(context.Background(), root, source, anchor, "", false, inv)
+	result, err := importCodexWithInventory(withTestInventoryWorkspace(t, context.Background()), root, source, anchor, "", false, inv)
 	if err != nil || result.SessionsScanned != 1 || result.TurnsSkipped != 1 || result.TurnsImported != 0 {
 		t.Fatalf("duplicate result: %+v, %v", result, err)
 	}
@@ -124,7 +124,7 @@ func TestImportHoldsDamagedOrPartialCoverageWithoutWriting(t *testing.T) {
 		damaged bool
 	}{{"damaged inventory", true}, {"partial conflicting coverage", false}} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
+			root := testTempDir(t)
 			source, anchor := syntheticCodexSource(t, root)
 			full, err := os.ReadFile(source)
 			if err != nil {
@@ -149,7 +149,7 @@ func TestImportHoldsDamagedOrPartialCoverageWithoutWriting(t *testing.T) {
 			} else {
 				inv.content = &checkpoint.SessionContent{Metadata: checkpoint.Metadata{SessionID: file.SessionID, Agent: adapter.AgentType(), CheckpointTranscriptStart: turns[0].LineStart}, Transcript: []byte("different transcript\n")}
 			}
-			if _, err := importCodexWithInventory(context.Background(), root, source, anchor, "", false, inv); err == nil {
+			if _, err := importCodexWithInventory(withTestInventoryWorkspace(t, context.Background()), root, source, anchor, "", false, inv); err == nil {
 				t.Fatal("unsafe import was not held")
 			}
 			assertNoCheckpointWrites(t, root)
@@ -164,7 +164,7 @@ func assertNoCheckpointWrites(t *testing.T, root string) {
 		t.Fatal(err)
 	}
 	defer repo.Close()
-	ctx := settings.WithWorktreeRoot(context.Background(), root)
+	ctx := settings.WithWorktreeRoot(withTestInventoryWorkspace(t, context.Background()), root)
 	stores, err := checkpoint.Open(ctx, repo, checkpoint.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -176,7 +176,7 @@ func assertNoCheckpointWrites(t *testing.T, root string) {
 }
 
 func TestImportOldCodexSessionIntoDifferentRepository(t *testing.T) {
-	root := t.TempDir()
+	root := testTempDir(t)
 	run := func(args ...string) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
@@ -188,7 +188,7 @@ func TestImportOldCodexSessionIntoDifferentRepository(t *testing.T) {
 	}
 	run("init", "--quiet")
 	run("commit", "--quiet", "--allow-empty", "-m", "fixture")
-	source := filepath.Join(t.TempDir(), "old.jsonl")
+	source := filepath.Join(testTempDir(t), "old.jsonl")
 	contents := `{"timestamp":"2020-01-01T00:00:00Z","type":"session_meta","payload":{"id":"session-fixture-123","cwd":"/deleted/checkout"}}
 {"timestamp":"2020-01-01T00:00:00Z","type":"event_msg","payload":{"type":"task_started","turn_id":"fixture-turn"}}
 {"timestamp":"2020-01-01T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fixture question"}]}}
@@ -205,7 +205,7 @@ func TestImportOldCodexSessionIntoDifferentRepository(t *testing.T) {
 	if err := os.Chtimes(source, old, old); err != nil {
 		t.Fatal(err)
 	}
-	ctx := context.Background()
+	ctx := withTestInventoryWorkspace(t, context.Background())
 	anchor := destinationHead(t, root)
 	preview, err := ImportCodex(ctx, root, source, anchor, true)
 	if err != nil || preview.SessionsScanned != 1 || preview.TurnsImported != 1 {
@@ -269,19 +269,19 @@ func TestImportOldCodexSessionIntoDifferentRepository(t *testing.T) {
 }
 
 func TestImportRequiresExplicitDisplayAnchor(t *testing.T) {
-	if _, err := ImportCodex(context.Background(), t.TempDir(), "unused", "", true); err == nil {
+	if _, err := ImportCodex(withTestInventoryWorkspace(t, context.Background()), testTempDir(t), "unused", "", true); err == nil {
 		t.Fatal("missing anchor accepted")
 	}
 }
 
 func TestVerifiedImportRejectsWrongSnapshotHashBeforeCheckpointWrite(t *testing.T) {
-	root := t.TempDir()
-	source := filepath.Join(t.TempDir(), "source.jsonl")
+	root := testTempDir(t)
+	source := filepath.Join(testTempDir(t), "source.jsonl")
 	contents := `{"type":"session_meta","payload":{"id":"verified-fixture"}}` + "\n" + `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fixture"}]}}` + "\n"
 	if err := os.WriteFile(source, []byte(contents), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ImportCodexVerified(context.Background(), root, source, strings.Repeat("0", 40), strings.Repeat("0", 64), false); err == nil {
+	if _, err := ImportCodexVerified(withTestInventoryWorkspace(t, context.Background()), root, source, strings.Repeat("0", 40), strings.Repeat("0", 64), false); err == nil {
 		t.Fatal("mismatched expected hash accepted")
 	}
 }
@@ -294,7 +294,7 @@ func TestImportedCheckpointSurvivesIsolatedGitRemoteAndFreshClone(t *testing.T) 
 
 func testCheckpointRemote(t *testing.T, backend string) {
 	t.Setenv("ENTIRE_CHECKPOINTS_PRIMARY", backend)
-	base := t.TempDir()
+	base := testTempDir(t)
 	remote := filepath.Join(base, "remote.git")
 	work := filepath.Join(base, "work")
 	clone := filepath.Join(base, "clone")
@@ -318,7 +318,7 @@ func testCheckpointRemote(t *testing.T, backend string) {
 	if err := os.WriteFile(source, []byte(contents), 0600); err != nil {
 		t.Fatal(err)
 	}
-	result, err := ImportCodex(context.Background(), work, source, destinationHead(t, work), false)
+	result, err := ImportCodex(withTestInventoryWorkspace(t, context.Background()), work, source, destinationHead(t, work), false)
 	if err != nil || result.TurnsImported != 1 {
 		t.Fatalf("import: %+v: %v", result, err)
 	}
@@ -338,7 +338,7 @@ func testCheckpointRemote(t *testing.T, backend string) {
 		t.Fatal(err)
 	}
 	defer repo.Close()
-	ctx := settings.WithWorktreeRoot(context.Background(), clone)
+	ctx := settings.WithWorktreeRoot(withTestInventoryWorkspace(t, context.Background()), clone)
 	stores, err := checkpoint.Open(ctx, repo, checkpoint.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -366,7 +366,7 @@ func TestPrivateHistoricalSession(t *testing.T) {
 		t.Fatal("cannot read selected session")
 	}
 	firstHash := sha256.Sum256(before)
-	root := t.TempDir()
+	root := testTempDir(t)
 	for _, args := range [][]string{{"init", "--quiet"}, {"commit", "--quiet", "--allow-empty", "-m", "local fixture"}} {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = root
@@ -376,7 +376,7 @@ func TestPrivateHistoricalSession(t *testing.T) {
 		}
 	}
 	anchor := destinationHead(t, root)
-	result, err := ImportCodex(context.Background(), root, source, anchor, false)
+	result, err := ImportCodex(withTestInventoryWorkspace(t, context.Background()), root, source, anchor, false)
 	if err != nil {
 		t.Fatal("private session import failed")
 	}
@@ -388,7 +388,7 @@ func TestPrivateHistoricalSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer repo.Close()
-	ctx := settings.WithWorktreeRoot(context.Background(), root)
+	ctx := settings.WithWorktreeRoot(withTestInventoryWorkspace(t, context.Background()), root)
 	stores, err := checkpoint.Open(ctx, repo, checkpoint.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -407,7 +407,7 @@ func TestPrivateHistoricalSession(t *testing.T) {
 			models++
 		}
 	}
-	second, err := ImportCodex(context.Background(), root, source, anchor, false)
+	second, err := ImportCodex(withTestInventoryWorkspace(t, context.Background()), root, source, anchor, false)
 	if err != nil || second.TurnsImported != 0 || second.TurnsSkipped != result.TurnsImported {
 		t.Fatal("repeat import was not idempotent")
 	}
@@ -475,7 +475,7 @@ func TestPrivateCodexCohortProcessIsolated(t *testing.T) {
 	if count < 10 || count > 20 {
 		t.Fatalf("cohort size outside 10-20: %d", count)
 	}
-	root := t.TempDir()
+	root := testTempDir(t)
 	globalConfig := filepath.Join(root, "empty.gitconfig")
 	if err := os.WriteFile(globalConfig, nil, 0600); err != nil {
 		t.Fatal("create empty global Git config")
@@ -577,7 +577,7 @@ func runPrivateCohortChild(t *testing.T, manifest, expectedManifestDigest, root,
 			}
 			expectedBoundaries[id][turn.LineStart] = turn.Model
 		}
-		result, err := ImportCodex(context.Background(), root, source, anchor, false)
+		result, err := ImportCodex(withTestInventoryWorkspace(t, context.Background()), root, source, anchor, false)
 		if err != nil {
 			t.Fatalf("source %d import failed", i)
 		}
@@ -599,7 +599,7 @@ func runPrivateCohortChild(t *testing.T, manifest, expectedManifestDigest, root,
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := settings.WithWorktreeRoot(context.Background(), root)
+	ctx := settings.WithWorktreeRoot(withTestInventoryWorkspace(t, context.Background()), root)
 	stores, err := checkpoint.Open(ctx, repo, checkpoint.OpenOptions{})
 	if err != nil {
 		_ = repo.Close()
@@ -827,7 +827,7 @@ func TestNativeOverlappingTasksRemainUnattributed(t *testing.T) {
 }
 
 func TestHeaderWithoutNewline(t *testing.T) {
-	root := t.TempDir()
+	root := testTempDir(t)
 	for _, args := range [][]string{{"init", "--quiet"}, {"commit", "--quiet", "--allow-empty", "-m", "fixture"}} {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = root
@@ -836,11 +836,11 @@ func TestHeaderWithoutNewline(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	source := filepath.Join(t.TempDir(), "header.jsonl")
+	source := filepath.Join(testTempDir(t), "header.jsonl")
 	if err := os.WriteFile(source, []byte(`{"type":"session_meta","payload":{"id":"valid-header"}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	result, err := ImportCodex(context.Background(), root, source, destinationHead(t, root), true)
+	result, err := ImportCodex(withTestInventoryWorkspace(t, context.Background()), root, source, destinationHead(t, root), true)
 	if err != nil || result.SessionsScanned != 1 || result.TurnsImported != 0 {
 		t.Fatalf("header-only preview: %+v, %v", result, err)
 	}
