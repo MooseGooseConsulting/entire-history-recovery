@@ -41,3 +41,14 @@ func TestEnsurePrivateDirRejectsUnsafeExistingDirectoryWithoutChangingIt(t *test
 		t.Fatalf("existing permissions changed: %o -> %o", before.Mode().Perm(), after.Mode().Perm())
 	}
 }
+
+func TestEnsurePrivateDirRequiresCustomParentToExist(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "missing-parent")
+	dir := filepath.Join(parent, "private")
+	if err := EnsurePrivateDir(dir); err == nil {
+		t.Fatal("custom directory with missing parent was accepted")
+	}
+	if _, err := os.Lstat(parent); !os.IsNotExist(err) {
+		t.Fatalf("custom parent was created or could not be inspected: %v", err)
+	}
+}
