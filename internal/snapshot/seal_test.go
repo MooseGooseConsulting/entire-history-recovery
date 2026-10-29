@@ -59,6 +59,42 @@ func TestSealCodexCopiesExactBytesAndIsIdempotentlyNonOverwriting(t *testing.T) 
 	}
 }
 
+func TestOpenedPrivateRootStaysAnchoredAfterPathIsReplaced(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "private")
+	if err := EnsurePrivateDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if err := verifyPrivateRoot(root); err != nil {
+		t.Fatalf("opened root did not pass private ACL check: %v", err)
+	}
+	moved := filepath.Join(base, "moved")
+	if err := os.Rename(dir, moved); err != nil {
+		t.Skipf("platform does not allow renaming an open directory: %v", err)
+	}
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	file, err := root.OpenFile("anchored.txt", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatalf("write through opened root after path replacement: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(moved, "anchored.txt")); err != nil {
+		t.Fatalf("write did not remain under originally opened directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "anchored.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("write followed replaced directory path: err=%v", err)
+	}
+}
+
 func TestSealRequiresInactiveAssertionAndRejectsDamagedSources(t *testing.T) {
 	source, _ := fixture(t)
 	dir := filepath.Join(t.TempDir(), "private")

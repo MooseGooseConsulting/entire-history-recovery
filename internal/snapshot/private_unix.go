@@ -14,7 +14,21 @@ import (
 func protectNewDirectory(string) error { return nil } // mode 0700 is applied atomically by os.Mkdir
 
 func verifyPrivateDirectory(path string) error {
-	info, err := os.Stat(path)
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return verifyPrivateRoot(root)
+}
+
+func verifyPrivateRoot(root *os.Root) error {
+	dir, err := root.Open(".")
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	info, err := dir.Stat()
 	if err != nil {
 		return err
 	}

@@ -5,6 +5,7 @@ package snapshot
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -160,12 +161,19 @@ func SealCodexContext(ctx context.Context, source, dir string, inactive bool) (S
 	if err := EnsurePrivateDir(dir); err != nil {
 		return Sealed{}, fmt.Errorf("secure snapshot directory: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, ".snapshot-*.tmp")
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return Sealed{}, fmt.Errorf("open private snapshot directory: %w", err)
+	}
+	defer root.Close()
+	if err := verifyPrivateRoot(root); err != nil {
+		return Sealed{}, fmt.Errorf("verify opened private snapshot directory: %w", err)
+	}
+	tmpName, tmp, err := createRootTemp(root)
 	if err != nil {
 		return Sealed{}, fmt.Errorf("create snapshot temporary file: %w", err)
 	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer root.Remove(tmpName)
 	if err := tmp.Chmod(0600); err != nil {
 		tmp.Close()
 		return Sealed{}, fmt.Errorf("restrict temporary snapshot: %w", err)
@@ -202,7 +210,7 @@ func SealCodexContext(ctx context.Context, source, dir string, inactive bool) (S
 	if !os.SameFile(before, fdAfter) || !os.SameFile(before, after) || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) || before.Size() != n {
 		return Sealed{}, errors.New("source changed during snapshot; discard and retry from a consistent inactive copy")
 	}
-	data, err := readBounded(tmpName)
+	data, err := readBoundedRoot(root, tmpName)
 	if err != nil {
 		return Sealed{}, fmt.Errorf("validate snapshot: %w", err)
 	}
@@ -219,12 +227,13 @@ func SealCodexContext(ctx context.Context, source, dir string, inactive bool) (S
 	if err := ctx.Err(); err != nil {
 		return Sealed{}, err
 	}
-	final := filepath.Join(dir, digest+".jsonl")
+	finalName := digest + ".jsonl"
+	final := filepath.Join(dir, finalName)
 	// Hard-link publication is atomic and fails if the content-addressed name
 	// already exists; never overwrite an earlier sealed snapshot.
-	if err := os.Link(tmpName, final); err != nil {
-		if _, statErr := os.Lstat(final); statErr == nil {
-			if verifyErr := Verify(final, digest); verifyErr != nil {
+	if err := root.Link(tmpName, finalName); err != nil {
+		if _, statErr := root.Lstat(finalName); statErr == nil {
+			if verifyErr := verifyRootSnapshot(root, finalName, digest); verifyErr != nil {
 				return Sealed{}, fmt.Errorf("existing content-addressed snapshot is corrupt: %w", verifyErr)
 			}
 			return Sealed{Path: final, SHA256: digest, SessionID: sid, Bytes: n}, nil
@@ -233,12 +242,12 @@ func SealCodexContext(ctx context.Context, source, dir string, inactive bool) (S
 	}
 	// The temporary name is another hard link to this inode. Remove it before
 	// making the published inode read-only, especially on Windows.
-	if err := os.Remove(tmpName); err != nil {
-		_ = os.Remove(final)
+	if err := root.Remove(tmpName); err != nil {
+		_ = root.Remove(finalName)
 		return Sealed{}, fmt.Errorf("remove snapshot staging link: %w", err)
 	}
-	if err := os.Chmod(final, 0400); err != nil {
-		os.Remove(final)
+	if err := root.Chmod(finalName, 0400); err != nil {
+		root.Remove(finalName)
 		return Sealed{}, fmt.Errorf("seal snapshot read-only: %w", err)
 	}
 	return Sealed{Path: final, SHA256: digest, SessionID: sid, Bytes: n}, nil
@@ -246,14 +255,58 @@ func SealCodexContext(ctx context.Context, source, dir string, inactive bool) (S
 
 // Verify checks that an apply path still names the exact sealed snapshot.
 func Verify(path, digest string) error {
-	info, err := os.Lstat(path)
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("open private snapshot directory: %w", err)
+	}
+	defer root.Close()
+	if err := verifyPrivateRoot(root); err != nil {
+		return fmt.Errorf("verify opened private snapshot directory: %w", err)
+	}
+	return verifyRootSnapshot(root, filepath.Base(path), digest)
+}
+
+func createRootTemp(root *os.Root) (string, *os.File, error) {
+	for attempt := 0; attempt < 10; attempt++ {
+		var random [16]byte
+		if _, err := rand.Read(random[:]); err != nil {
+			return "", nil, fmt.Errorf("generate temporary snapshot name: %w", err)
+		}
+		name := ".snapshot-" + hex.EncodeToString(random[:]) + ".tmp"
+		file, err := root.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		return name, file, err
+	}
+	return "", nil, errors.New("could not allocate a unique temporary snapshot name")
+}
+
+func readBoundedRoot(root *os.Root, name string) ([]byte, error) {
+	file, err := root.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, MaxSnapshotBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > MaxSnapshotBytes {
+		return nil, fmt.Errorf("snapshot exceeds experimental limit of %d bytes", MaxSnapshotBytes)
+	}
+	return data, nil
+}
+
+func verifyRootSnapshot(root *os.Root, name, digest string) error {
+	info, err := root.Lstat(name)
 	if err != nil {
 		return fmt.Errorf("inspect sealed snapshot: %w", err)
 	}
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("sealed snapshot must be a regular file, not a symlink")
 	}
-	data, err := readBounded(path)
+	data, err := readBoundedRoot(root, name)
 	if err != nil {
 		return fmt.Errorf("read sealed snapshot: %w", err)
 	}
@@ -287,22 +340,6 @@ func verifySourceDigest(ctx context.Context, src *os.File, expected string) erro
 
 func validate(data []byte) (string, error) {
 	return validateContext(context.Background(), data)
-}
-
-func readBounded(path string) ([]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, MaxSnapshotBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > MaxSnapshotBytes {
-		return nil, fmt.Errorf("snapshot exceeds experimental limit of %d bytes", MaxSnapshotBytes)
-	}
-	return data, nil
 }
 
 func copyContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
