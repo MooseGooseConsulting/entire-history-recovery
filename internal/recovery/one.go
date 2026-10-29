@@ -1,0 +1,127 @@
+// Package recovery prototypes importing a specifically selected Codex session.
+// It does not discover repositories, push checkpoints, or verify server data.
+package recovery
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/entireio/cli/cmd/entire/cli/agentimport"
+	"github.com/entireio/cli/cmd/entire/cli/settings"
+	"github.com/entireio/cli/cmd/entire/cli/strategy"
+	git "github.com/go-git/go-git/v6"
+)
+
+// fixedSource delegates parsing to Entire but supplies the selected file.
+type fixedSource struct {
+	agentimport.Importer
+	file agentimport.SessionFile
+}
+
+func (s fixedSource) Discover(_ string, _ string, _ time.Time, _ []string) ([]agentimport.SessionFile, error) {
+	return []agentimport.SessionFile{s.file}, nil
+}
+
+// SplitTurns keeps Entire's boundaries and augments only unambiguous model
+// identifiers found in native turn_context events within that turn.
+func (s fixedSource) SplitTurns(file agentimport.SessionFile, full []byte) ([]agentimport.Turn, error) {
+	turns, err := s.Importer.SplitTurns(file, full)
+	if err != nil {
+		return nil, err
+	}
+	lines := bytes.Split(full, []byte{'\n'})
+	for i := range turns {
+		turn := &turns[i]
+		if turn.Model != "" || turn.LineStart < 0 || turn.LineEnd > len(lines) || turn.LineStart >= turn.LineEnd {
+			continue
+		}
+		model, ambiguous := "", false
+		for _, line := range lines[turn.LineStart:turn.LineEnd] {
+			var event struct {
+				Type    string `json:"type"`
+				Payload struct {
+					Model string `json:"model"`
+				} `json:"payload"`
+			}
+			if json.Unmarshal(line, &event) != nil || event.Type != "turn_context" || event.Payload.Model == "" {
+				continue
+			}
+			if model != "" && model != event.Payload.Model {
+				ambiguous = true
+				break
+			}
+			model = event.Payload.Model
+		}
+		if !ambiguous {
+			turn.Model = model
+		}
+	}
+	return turns, nil
+}
+
+// ImportCodex is a local-only prototype. The caller must establish that the
+// selected session belongs to repoRoot before calling it. This deliberately
+// does not expose a production command or push any checkpoint data.
+func ImportCodex(ctx context.Context, repoRoot, source string, dryRun bool) (agentimport.Result, error) {
+	var result agentimport.Result
+	root, err := filepath.Abs(repoRoot)
+	if err != nil {
+		return result, err
+	}
+	path, err := filepath.Abs(source)
+	if err != nil {
+		return result, err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return result, err
+	}
+	defer f.Close()
+	reader := bufio.NewReader(f)
+	line, err := reader.ReadBytes('\n')
+	if err != nil {
+		return result, fmt.Errorf("read Codex session metadata: %w", err)
+	}
+	var header struct {
+		Type    string `json:"type"`
+		Payload struct {
+			ID string `json:"id"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(line, &header); err != nil || header.Type != "session_meta" || header.Payload.ID == "" {
+		return result, errors.New("source has no valid Codex session ID")
+	}
+	var adapter agentimport.Importer
+	for _, candidate := range agentimport.All() {
+		if candidate.Name() == "codex" {
+			adapter = candidate
+			break
+		}
+	}
+	if adapter == nil {
+		return result, errors.New("Entire Codex importer unavailable")
+	}
+	repo, err := git.PlainOpen(root)
+	if err != nil {
+		return result, fmt.Errorf("open destination repository: %w", err)
+	}
+	defer repo.Close()
+	head, err := repo.Head()
+	if err != nil {
+		return result, fmt.Errorf("resolve destination HEAD: %w", err)
+	}
+	ctx = settings.WithWorktreeRoot(ctx, root)
+	if err := strategy.EnsureRedactionConfigured(ctx); err != nil {
+		return result, fmt.Errorf("configure redaction: %w", err)
+	}
+	return agentimport.Run(ctx, repo, fixedSource{Importer: adapter, file: agentimport.SessionFile{Path: path, SessionID: header.Payload.ID}}, agentimport.Options{
+		RepoRoot: root, Now: time.Now(), DryRun: dryRun, LinkCommitSHA: head.Hash().String(),
+	})
+}
