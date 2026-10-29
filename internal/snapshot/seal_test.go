@@ -1,8 +1,11 @@
 package snapshot
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -140,7 +143,53 @@ func TestVerifySourceDigestRejectsSameSizeRewrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256(original)
-	if err := verifySourceDigest(file, hex.EncodeToString(digest[:])); err == nil {
+	if err := verifySourceDigest(context.Background(), file, hex.EncodeToString(digest[:])); err == nil {
 		t.Fatal("same-size rewritten source accepted")
+	}
+}
+
+type cancelOnRead struct {
+	cancel context.CancelFunc
+	data   []byte
+}
+
+func (r *cancelOnRead) Read(p []byte) (int, error) {
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	r.cancel()
+	return n, nil
+}
+
+func TestCopyContextCancelsDuringCopy(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var dst bytes.Buffer
+	n, err := copyContext(ctx, &dst, &cancelOnRead{cancel: cancel, data: []byte("partial")})
+	if !errors.Is(err, context.Canceled) || n == 0 || dst.Len() == 0 {
+		t.Fatalf("mid-copy cancellation: copied=%d data=%d err=%v", n, dst.Len(), err)
+	}
+}
+
+func TestSnapshotLimitRejectsOversizedFile(t *testing.T) {
+	source := filepath.Join(t.TempDir(), "oversized.jsonl")
+	f, err := os.Create(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(MaxSnapshotBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "private")
+	if _, err := SealCodex(source, dir, true); err == nil {
+		t.Fatal("oversized source accepted")
+	}
+	if err := Verify(source, strings.Repeat("0", 64)); err == nil {
+		t.Fatal("oversized snapshot accepted by verifier")
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatal("oversized source created snapshot storage")
 	}
 }

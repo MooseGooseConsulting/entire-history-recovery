@@ -49,7 +49,9 @@ func snapshotCommand(args []string) {
 	if err := snapshot.EnsurePrivateDir(*dir); err != nil {
 		fail(err.Error(), 1)
 	}
-	sealed, err := snapshot.SealCodex(*source, *dir, true)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+	sealed, err := snapshot.SealCodexContext(ctx, *source, *dir, true)
 	if err != nil {
 		fail(err.Error(), 1)
 	}

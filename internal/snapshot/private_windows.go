@@ -14,6 +14,8 @@ import (
 // interpolated PowerShell source. Get-Acl compares SID objects, independent of
 // localized principal names.
 const privateACLScript = `$ErrorActionPreference = 'Stop'
+$env:PSModulePath = (Join-Path $PSHOME 'Modules') + [IO.Path]::PathSeparator + $env:PSModulePath
+Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
 $p = $env:ENTIRE_RECOVERY_PRIVATE_DIR
 $a = Get-Acl -LiteralPath $p
 $who = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -48,9 +50,6 @@ func protectNewDirectory(path string) error {
 func verifyPrivateDirectory(path string) error {
 	cmd := exec.Command("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", privateACLScript)
 	env := append(os.Environ(), "ENTIRE_RECOVERY_PRIVATE_DIR="+path)
-	// mise may set a PowerShell 7 PSModulePath. Windows PowerShell 5.1 must
-	// load its own Microsoft.PowerShell.Security module for Get-Acl.
-	env = append(env, "PSModulePath=C:\\Program Files\\WindowsPowerShell\\Modules;C:\\WINDOWS\\system32\\WindowsPowerShell\\v1.0\\Modules")
 	cmd.Env = env
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("verify Windows private ACL: %w: %s", err, strings.TrimSpace(string(output)))

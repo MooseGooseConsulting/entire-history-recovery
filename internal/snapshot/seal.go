@@ -3,6 +3,8 @@
 package snapshot
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +15,11 @@ import (
 	"path/filepath"
 	"strings"
 )
+
+// MaxSnapshotBytes bounds this experimental recovery path while the upstream
+// importer and this validator still materialize transcript data in memory.
+// It is a hard limit: inputs above it are rejected, never truncated.
+const MaxSnapshotBytes int64 = 64 << 20
 
 // Sealed identifies a validated private snapshot. The source pathname is
 // intentionally absent: callers should retain provenance in their private
@@ -77,8 +84,17 @@ func CheckPrivateDir(dir string) error {
 // changes during the copy but cannot prove a remote agent process is stopped;
 // active sources require their native consistent-export mechanism.
 func SealCodex(source, dir string, inactive bool) (Sealed, error) {
+	return SealCodexContext(context.Background(), source, dir, inactive)
+}
+
+// SealCodexContext is the cancellable form of SealCodex. It retains the
+// operator's inactivity assertion and does not claim to prove quiescence.
+func SealCodexContext(ctx context.Context, source, dir string, inactive bool) (Sealed, error) {
 	if !inactive {
 		return Sealed{}, errors.New("source must be confirmed inactive; live writers require a consistent native export")
+	}
+	if err := ctx.Err(); err != nil {
+		return Sealed{}, err
 	}
 	src, err := os.Open(source)
 	if err != nil {
@@ -91,6 +107,9 @@ func SealCodex(source, dir string, inactive bool) (Sealed, error) {
 	}
 	if !before.Mode().IsRegular() {
 		return Sealed{}, errors.New("source must be a regular file")
+	}
+	if before.Size() > MaxSnapshotBytes {
+		return Sealed{}, fmt.Errorf("source exceeds experimental snapshot limit of %d bytes", MaxSnapshotBytes)
 	}
 	if err := EnsurePrivateDir(dir); err != nil {
 		return Sealed{}, fmt.Errorf("secure snapshot directory: %w", err)
@@ -106,10 +125,14 @@ func SealCodex(source, dir string, inactive bool) (Sealed, error) {
 		return Sealed{}, fmt.Errorf("restrict temporary snapshot: %w", err)
 	}
 	h := sha256.New()
-	n, err := io.Copy(io.MultiWriter(tmp, h), src)
+	n, err := copyContext(ctx, io.MultiWriter(tmp, h), io.LimitReader(src, MaxSnapshotBytes+1))
 	if err != nil {
 		tmp.Close()
 		return Sealed{}, fmt.Errorf("copy source snapshot: %w", err)
+	}
+	if n > MaxSnapshotBytes {
+		tmp.Close()
+		return Sealed{}, fmt.Errorf("source exceeds experimental snapshot limit of %d bytes", MaxSnapshotBytes)
 	}
 	if err := tmp.Sync(); err != nil {
 		tmp.Close()
@@ -119,7 +142,7 @@ func SealCodex(source, dir string, inactive bool) (Sealed, error) {
 		return Sealed{}, fmt.Errorf("close snapshot: %w", err)
 	}
 	digest := hex.EncodeToString(h.Sum(nil))
-	if err := verifySourceDigest(src, digest); err != nil {
+	if err := verifySourceDigest(ctx, src, digest); err != nil {
 		return Sealed{}, err
 	}
 	fdAfter, err := src.Stat()
@@ -133,11 +156,11 @@ func SealCodex(source, dir string, inactive bool) (Sealed, error) {
 	if !os.SameFile(before, fdAfter) || !os.SameFile(before, after) || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) || before.Size() != n {
 		return Sealed{}, errors.New("source changed during snapshot; discard and retry from a consistent inactive copy")
 	}
-	data, err := os.ReadFile(tmpName)
+	data, err := readBounded(tmpName)
 	if err != nil {
 		return Sealed{}, fmt.Errorf("validate snapshot: %w", err)
 	}
-	sid, err := validate(data)
+	sid, err := validateContext(ctx, data)
 	if err != nil {
 		return Sealed{}, err
 	}
@@ -181,7 +204,7 @@ func Verify(path, digest string) error {
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("sealed snapshot must be a regular file, not a symlink")
 	}
-	data, err := os.ReadFile(path)
+	data, err := readBounded(path)
 	if err != nil {
 		return fmt.Errorf("read sealed snapshot: %w", err)
 	}
@@ -195,13 +218,17 @@ func Verify(path, digest string) error {
 	return nil
 }
 
-func verifySourceDigest(src *os.File, expected string) error {
+func verifySourceDigest(ctx context.Context, src *os.File, expected string) error {
 	if _, err := src.Seek(0, io.SeekStart); err != nil {
 		return fmt.Errorf("rewind source for stability check: %w", err)
 	}
 	h := sha256.New()
-	if _, err := io.Copy(h, src); err != nil {
+	n, err := copyContext(ctx, h, io.LimitReader(src, MaxSnapshotBytes+1))
+	if err != nil {
 		return fmt.Errorf("rehash opened source: %w", err)
+	}
+	if n > MaxSnapshotBytes {
+		return fmt.Errorf("source exceeds experimental snapshot limit of %d bytes", MaxSnapshotBytes)
 	}
 	if hex.EncodeToString(h.Sum(nil)) != expected {
 		return errors.New("source changed during snapshot; discard and retry from a consistent inactive copy")
@@ -210,17 +237,71 @@ func verifySourceDigest(src *os.File, expected string) error {
 }
 
 func validate(data []byte) (string, error) {
+	return validateContext(context.Background(), data)
+}
+
+func readBounded(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, MaxSnapshotBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > MaxSnapshotBytes {
+		return nil, fmt.Errorf("snapshot exceeds experimental limit of %d bytes", MaxSnapshotBytes)
+	}
+	return data, nil
+}
+
+func copyContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
+	return io.Copy(dst, contextReader{ctx: ctx, src: src})
+}
+
+type contextReader struct {
+	ctx context.Context
+	src io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	n, err := r.src.Read(p)
+	if ctxErr := r.ctx.Err(); ctxErr != nil {
+		return n, ctxErr
+	}
+	return n, err
+}
+
+func validateContext(ctx context.Context, data []byte) (string, error) {
 	var id string
-	for i, raw := range strings.Split(string(data), "\n") {
-		line := strings.TrimSpace(raw)
-		if line == "" && i > 0 {
+	for i, rest := 0, data; ; i++ {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		end := bytes.IndexByte(rest, '\n')
+		lineBytes := rest
+		if end >= 0 {
+			lineBytes = rest[:end]
+			rest = rest[end+1:]
+		} else {
+			rest = nil
+		}
+		lineBytes = bytes.TrimSpace(lineBytes)
+		if len(lineBytes) == 0 && i > 0 {
+			if end < 0 {
+				break
+			}
 			continue
 		}
 		var row struct {
 			Type    string          `json:"type"`
 			Payload json.RawMessage `json:"payload"`
 		}
-		if json.Unmarshal([]byte(line), &row) != nil || row.Type == "" || len(row.Payload) < 2 || row.Payload[0] != '{' {
+		if json.Unmarshal(lineBytes, &row) != nil || row.Type == "" || len(row.Payload) < 2 || row.Payload[0] != '{' {
 			return "", fmt.Errorf("invalid Codex JSONL record at line %d", i+1)
 		}
 		if i == 0 {
@@ -233,6 +314,9 @@ func validate(data []byte) (string, error) {
 			id = meta.ID
 		} else if row.Type == "session_meta" {
 			return "", fmt.Errorf("second session header at line %d", i+1)
+		}
+		if end < 0 {
+			break
 		}
 	}
 	return id, nil
