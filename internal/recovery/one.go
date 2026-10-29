@@ -153,12 +153,17 @@ func hasCodexAssistantOrToolWork(full []byte) bool {
 // selected session belongs to repoRoot before calling it. anchor is Entire's
 // display anchor, not commit attribution; the caller must select it explicitly.
 // This does not expose a production command or push checkpoint data.
+// ImportCodex imports a selected Codex session after reconciling local and
+// configured checkpoint storage. If configured Git read targets exist, ctx
+// must carry a private workspace via WithInventoryWorkspace; inventory fails
+// closed without one.
 func ImportCodex(ctx context.Context, repoRoot, source, anchor string, dryRun bool) (agentimport.Result, error) {
 	return importCodex(ctx, repoRoot, source, anchor, "", dryRun)
 }
 
 // ImportCodexVerified imports only when source still has the SHA-256 verified
 // by the caller. It also pins that digest across agentimport.Run's reread.
+// Like ImportCodex, configured Git read targets require a private workspace.
 func ImportCodexVerified(ctx context.Context, repoRoot, source, anchor, expectedSHA256 string, dryRun bool) (agentimport.Result, error) {
 	if len(expectedSHA256) != 64 {
 		return agentimport.Result{}, errors.New("expected snapshot SHA-256 is required")
