@@ -14,6 +14,12 @@ Make historical agent work useful in Entire: ingest genuine recovered sessions i
 4. **PR 4 onward — scale source discovery and ingestion.** Only once the real import round trip works, add manifest-driven discovery, historical repository mapping, deduplication, format support, and resumable batch processing. Use existing source inventories and indexes first. Deleted checkouts must not be required; uncertain mappings must not become invented links. Split further PRs by working capability as scope becomes clear.
 5. **Dispatch and completion.** Determine whether Entire's cloud dispatch can accurately represent recovered checkpoints and all landed commits. If it cannot, implement a GitHub-backed dispatch enriched with verified Entire records. Verify the same time window against actual Git history and report failures rather than treating missing data as inactivity. Reconcile adapter changes and retire temporary scratch materials after preserving unique work.
 
+## Security scope
+
+Security work serves the recovery outcome: preserve original sources, keep credentials and private transcripts/manifests out of the public tools repository, and verify the repository, storage destination and visibility before publishing recovered history. Use existing authenticated tools without exposing their credentials. Keep recovery evidence private and retain enough evidence to inspect and resume the operation.
+
+This project is not a workstation security overhaul. Machine-wide ACL remediation, drive migration and defenses against a hostile process already running as the same user are outside this implementation's scope. Do not change existing host permissions or make general host hardening a prerequisite for local recovery tests. Triage security review comments against concrete recovery data exposure, corruption and publication risks; record broader concerns separately. This boundary does not authorize publishing private history or bypassing destination and duplicate checks.
+
 ## Definition of working
 
 - A historical session whose original checkout is gone appears under the correct Entire repository with its real agent and source-backed metadata.

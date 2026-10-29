@@ -2,6 +2,8 @@
 
 ## Deviations
 
+- Security scope is recorded in [GOALS.md](../../GOALS.md#security-scope). The exploratory ancestor-ACL guard remains outside the implementation stack; no existing host ACLs were changed. Broad host hardening must not displace the recovery and live verification work.
+
 - Earlier work treated SER10 authentication as blocking server proof. The revised plan uses the authenticated Windows CLI and keeps host choice independent of source discovery.
 - Existing deterministic checkpoint IDs only establish repeat-import behavior for visible imported records. The plan now requires remote/server inventory and native-live session coverage reconciliation before real production writes.
 - The first native Codex parser splits injected user-role context into importer units. The 14-record local result is not a claim of 14 human prompts.
@@ -22,6 +24,8 @@
 ## Current evidence and remaining work
 
 Twelve actual inactive single-header sessions produced 37 local checkpoint records. Both the process-isolated cohort path and the separate sealed CLI path performed actual second writes: zero new records, 37 skipped. Original hashes and checkpoint refs were unchanged. The CLI run left no staging files and its temporary repository was removable after process exit. Real sources, source paths, manifests and receipts remain private.
+
+A subsequent retained local destination was verified using installed Entire CLI 0.12.1: checkpoint list changed from 0 to 37 and remained 37 after retrying the same 12 sessions. Native detail readback covered all 37 records and the 12 original session identities; stored transcripts and a full rendered conversation were inspected privately. The retained repository has no remotes. This is native local CLI evidence, not hosted Entire visibility. Its location and raw captures are kept in the private receipt rather than this public repository.
 
 The full synthetic suite and vet passed on SER10 Linux at `2bd2a00`, including the newly connected local coverage guard; no private corpus was transferred. Windows snapshot tests and the deliberate child-process cleanup acceptance pass. The original in-process Windows test cleanup problem remains unresolved; process exit is the verified operating boundary.
 
