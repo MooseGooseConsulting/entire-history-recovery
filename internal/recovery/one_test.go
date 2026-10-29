@@ -59,7 +59,7 @@ func TestImportOldCodexSessionIntoDifferentRepository(t *testing.T) {
 	if err := os.WriteFile(source, []byte(contents), 0600); err != nil {
 		t.Fatal(err)
 	}
-	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	old := time.Date(2021, 2, 3, 4, 5, 6, 0, time.UTC)
 	if err := os.Chtimes(source, old, old); err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestImportOldCodexSessionIntoDifferentRepository(t *testing.T) {
 	if data.Metadata.Kind != "imported" || data.Metadata.CommitSHA == "" {
 		t.Fatal("import kind or display anchor missing")
 	}
-	if data.Metadata.CreatedAt.Year() != 2020 || data.Metadata.CheckpointTranscriptStart != 2 {
+	if !data.Metadata.CreatedAt.Equal(time.Date(2020, 1, 1, 0, 0, 1, 0, time.UTC)) || data.Metadata.CheckpointTranscriptStart != 2 {
 		t.Fatalf("time or offset: %+v", data.Metadata)
 	}
 	if data.Metadata.Model != "fixture-model" {
@@ -340,7 +340,10 @@ func TestPrivateCodexCohortProcessIsolated(t *testing.T) {
 	}
 	privateManifest := filepath.Join(root, "sources.manifest")
 	manifestBytes := []byte(normalized.String())
-	if err := os.WriteFile(privateManifest, manifestBytes, 0400); err != nil {
+	// Keep the file writable so Windows can remove the containing temporary
+	// directory after both child processes exit. The child verifies the pinned
+	// digest before reading it, which detects accidental manifest changes.
+	if err := os.WriteFile(privateManifest, manifestBytes, 0600); err != nil {
 		t.Fatal("seal normalized private manifest")
 	}
 	manifestHash := sha256.Sum256(manifestBytes)
