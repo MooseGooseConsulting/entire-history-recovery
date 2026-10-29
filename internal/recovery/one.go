@@ -3,13 +3,12 @@
 package recovery
 
 import (
-	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -23,7 +22,8 @@ import (
 // fixedSource delegates parsing to Entire but supplies the selected file.
 type fixedSource struct {
 	agentimport.Importer
-	file agentimport.SessionFile
+	file   agentimport.SessionFile
+	digest *[32]byte
 }
 
 func (s fixedSource) Discover(_ string, _ string, _ time.Time, _ []string) ([]agentimport.SessionFile, error) {
@@ -33,6 +33,12 @@ func (s fixedSource) Discover(_ string, _ string, _ time.Time, _ []string) ([]ag
 // SplitTurns retains Entire's boundaries and uses matching native task IDs to
 // associate contexts even when the context appears before the user message.
 func (s fixedSource) SplitTurns(file agentimport.SessionFile, full []byte) ([]agentimport.Turn, error) {
+	if s.digest != nil && sha256.Sum256(full) != *s.digest {
+		return nil, errors.New("source changed after validation; select an inactive snapshot and retry")
+	}
+	if _, err := validateCodexSnapshot(full); err != nil {
+		return nil, err
+	}
 	turns, err := s.Importer.SplitTurns(file, full)
 	if err != nil {
 		return nil, err
@@ -114,25 +120,15 @@ func ImportCodex(ctx context.Context, repoRoot, source, anchor string, dryRun bo
 	if err != nil {
 		return result, err
 	}
-	f, err := os.Open(path)
+	full, err := os.ReadFile(path)
 	if err != nil {
 		return result, err
 	}
-	defer f.Close()
-	reader := bufio.NewReader(f)
-	line, err := reader.ReadBytes('\n')
-	if err != nil && !(errors.Is(err, io.EOF) && len(line) > 0) {
-		return result, fmt.Errorf("read Codex session metadata: %w", err)
+	sessionID, err := validateCodexSnapshot(full)
+	if err != nil {
+		return result, err
 	}
-	var header struct {
-		Type    string `json:"type"`
-		Payload struct {
-			ID string `json:"id"`
-		} `json:"payload"`
-	}
-	if err := json.Unmarshal(line, &header); err != nil || header.Type != "session_meta" || header.Payload.ID == "" {
-		return result, errors.New("source has no valid Codex session ID")
-	}
+	digest := sha256.Sum256(full)
 	var adapter agentimport.Importer
 	for _, candidate := range agentimport.All() {
 		if candidate.Name() == "codex" {
@@ -152,7 +148,39 @@ func ImportCodex(ctx context.Context, repoRoot, source, anchor string, dryRun bo
 	if err := strategy.EnsureRedactionConfigured(ctx); err != nil {
 		return result, fmt.Errorf("configure redaction: %w", err)
 	}
-	return agentimport.Run(ctx, repo, fixedSource{Importer: adapter, file: agentimport.SessionFile{Path: path, SessionID: header.Payload.ID}}, agentimport.Options{
+	return agentimport.Run(ctx, repo, fixedSource{Importer: adapter, file: agentimport.SessionFile{Path: path, SessionID: sessionID}, digest: &digest}, agentimport.Options{
 		RepoRoot: root, Now: time.Now(), DryRun: dryRun, LinkCommitSHA: anchor,
 	})
+}
+
+// Reject damaged or concatenated sessions before the upstream parser can skip
+// unreadable records. Unknown event types remain valid for forward compatibility.
+// Errors expose line numbers, never transcript contents.
+func validateCodexSnapshot(full []byte) (string, error) {
+	var sessionID string
+	for i, raw := range bytes.Split(full, []byte{'\n'}) {
+		line := bytes.TrimSpace(raw)
+		if len(line) == 0 && i > 0 {
+			continue
+		}
+		var record struct {
+			Type    string          `json:"type"`
+			Payload json.RawMessage `json:"payload"`
+		}
+		if json.Unmarshal(line, &record) != nil || record.Type == "" || len(record.Payload) == 0 || record.Payload[0] != '{' {
+			return "", fmt.Errorf("invalid Codex record at line %d", i+1)
+		}
+		if i == 0 {
+			var meta struct {
+				ID string `json:"id"`
+			}
+			if record.Type != "session_meta" || json.Unmarshal(record.Payload, &meta) != nil || meta.ID == "" {
+				return "", errors.New("source has no valid Codex session ID")
+			}
+			sessionID = meta.ID
+		} else if record.Type == "session_meta" {
+			return "", fmt.Errorf("additional session header at line %d; split concatenated sessions before importing", i+1)
+		}
+	}
+	return sessionID, nil
 }
