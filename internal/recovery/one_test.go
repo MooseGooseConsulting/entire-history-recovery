@@ -45,11 +45,13 @@ func TestImportOldCodexSessionIntoDifferentRepository(t *testing.T) {
 	run("commit", "--quiet", "--allow-empty", "-m", "fixture")
 	source := filepath.Join(t.TempDir(), "old.jsonl")
 	contents := `{"timestamp":"2020-01-01T00:00:00Z","type":"session_meta","payload":{"id":"session-fixture-123","cwd":"/deleted/checkout"}}
+{"timestamp":"2020-01-01T00:00:00Z","type":"event_msg","payload":{"type":"task_started","turn_id":"fixture-turn"}}
 {"timestamp":"2020-01-01T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fixture question"}]}}
-{"timestamp":"2020-01-01T00:00:01Z","type":"turn_context","payload":{"model":"fixture-model"}}
+{"timestamp":"2020-01-01T00:00:01Z","type":"turn_context","payload":{"turn_id":"fixture-turn","model":"fixture-model"}}
 {"timestamp":"2020-01-01T00:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5,"total_tokens":15}}}}
 {"timestamp":"2020-01-01T00:00:01Z","type":"response_item","payload":{"type":"reasoning","encrypted_content":"synthetic-ciphertext-marker"}}
 {"timestamp":"2020-01-01T00:00:02Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"fixture answer"}]}}
+{"timestamp":"2020-01-01T00:00:03Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"fixture-turn"}}
 `
 	if err := os.WriteFile(source, []byte(contents), 0600); err != nil {
 		t.Fatal(err)
@@ -96,7 +98,7 @@ func TestImportOldCodexSessionIntoDifferentRepository(t *testing.T) {
 	if data.Metadata.Kind != "imported" || data.Metadata.CommitSHA == "" {
 		t.Fatal("import kind or display anchor missing")
 	}
-	if data.Metadata.CreatedAt.Year() != 2020 || data.Metadata.CheckpointTranscriptStart != 1 {
+	if data.Metadata.CreatedAt.Year() != 2020 || data.Metadata.CheckpointTranscriptStart != 2 {
 		t.Fatalf("time or offset: %+v", data.Metadata)
 	}
 	if data.Metadata.Model != "fixture-model" {
@@ -333,7 +335,7 @@ func TestModelBeforePromptNeverAssignedToPriorTurn(t *testing.T) {
 	}
 }
 
-func TestSingleTurnModelBeforePrompt(t *testing.T) {
+func TestSingleTurnModelWithoutNativeCorrelationRemainsUnknown(t *testing.T) {
 	var adapter agentimport.Importer
 	for _, candidate := range agentimport.All() {
 		if candidate.Name() == "codex" {
@@ -349,8 +351,8 @@ func TestSingleTurnModelBeforePrompt(t *testing.T) {
 {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"one"}]}}
 `
 	turns, err := (fixedSource{Importer: adapter}).SplitTurns(agentimport.SessionFile{SessionID: "test"}, []byte(input))
-	if err != nil || len(turns) != 1 || turns[0].Model != "model-a" {
-		t.Fatalf("single-turn model not preserved")
+	if err != nil || len(turns) != 1 || turns[0].Model != "" {
+		t.Fatal("unverified model was attributed")
 	}
 }
 

@@ -94,31 +94,6 @@ func (s fixedSource) SplitTurns(file agentimport.SessionFile, full []byte) ([]ag
 			}
 		}
 	}
-	if len(turns) != 1 || turns[0].Model != "" || len(tasks) != 0 || active != nil {
-		return turns, nil
-	}
-	// Legacy single-turn sessions may lack task IDs. Only one globally
-	// unambiguous model is safe when there is exactly one prompt.
-	model, ambiguous := "", false
-	for _, line := range lines {
-		var event struct {
-			Type    string `json:"type"`
-			Payload struct {
-				Model string `json:"model"`
-			} `json:"payload"`
-		}
-		if json.Unmarshal(line, &event) != nil || event.Type != "turn_context" || event.Payload.Model == "" {
-			continue
-		}
-		if model != "" && model != event.Payload.Model {
-			ambiguous = true
-			break
-		}
-		model = event.Payload.Model
-	}
-	if !ambiguous {
-		turns[0].Model = model
-	}
 	return turns, nil
 }
 
