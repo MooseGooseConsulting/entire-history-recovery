@@ -29,6 +29,24 @@ type Record struct {
 // remote names-only stubs. Any failed read invalidates the whole result. The
 // caller still has to establish whether List enumerated the required scope.
 func ReadVisible(ctx context.Context, reader Reader) ([]Record, error) {
+	return readVisible(ctx, reader, "")
+}
+
+// ReadVisibleSession enumerates every summary and session identity but hydrates
+// only the selected session when the store supports metadata-only reads. Stores
+// without that capability are streamed so unrelated bodies are not retained.
+// Listing completeness is still the caller's responsibility.
+func ReadVisibleSession(ctx context.Context, reader Reader, sessionID string) ([]Record, error) {
+	if sessionID == "" {
+		return nil, errors.New("session identity is required")
+	}
+	return readVisible(ctx, reader, sessionID)
+}
+
+func readVisible(ctx context.Context, reader Reader, sessionID string) ([]Record, error) {
+	metadataReader, canReadMetadata := reader.(interface {
+		ReadSessionMetadata(context.Context, id.CheckpointID, int) (*cp.Metadata, error)
+	})
 	items, err := reader.List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("checkpoint inventory listing failed: %w", err)
@@ -54,12 +72,30 @@ func ReadVisible(ctx context.Context, reader Reader) ([]Record, error) {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
+			if sessionID != "" && canReadMetadata {
+				meta, err := metadataReader.ReadSessionMetadata(ctx, item.CheckpointID, index)
+				if err != nil {
+					return nil, fmt.Errorf("checkpoint session metadata inventory failed: %w", err)
+				}
+				if meta == nil || meta.SessionID == "" || meta.Agent == "" {
+					return nil, errors.New("checkpoint session inventory lacks identity")
+				}
+				if meta.SessionID != sessionID {
+					continue
+				}
+			}
 			content, err := reader.ReadSessionContent(ctx, item.CheckpointID, index)
 			if err != nil {
 				return nil, fmt.Errorf("checkpoint session inventory failed: %w", err)
 			}
 			if content == nil || content.Metadata.SessionID == "" || content.Metadata.Agent == "" || len(content.Transcript) == 0 {
 				return nil, errors.New("checkpoint session inventory lacks identity or transcript")
+			}
+			if sessionID != "" && content.Metadata.SessionID != sessionID {
+				if canReadMetadata {
+					return nil, errors.New("checkpoint session identity changed during inventory")
+				}
+				continue
 			}
 			records = append(records, Record{CheckpointID: item.CheckpointID, SessionIndex: index, Content: *content})
 		}
