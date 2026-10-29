@@ -271,12 +271,15 @@ func walkStrictBranch(ctx context.Context, repo *git.Repository, root *object.Tr
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if shard.Mode != filemode.Dir {
-			continue
+		if shard.Mode != filemode.Dir || len(shard.Name) != 2 {
+			// Only familiar repository housekeeping files are safely unrelated
+			// to checkpoint shards. Unknown entries may represent an unsupported
+			// layout, so they cannot establish an exhaustive inventory.
+			if shard.Mode == filemode.Regular && (shard.Name == "README.md" || shard.Name == ".gitignore" || shard.Name == ".gitattributes") {
+				continue
+			}
+			return errors.New("unsupported entry at root of Entire checkpoint branch")
 		}
-		if len(shard.Name) != 2 {
-			continue
-		} // ancillary root entries are not checkpoint shards
 		bucket, err := repo.TreeObject(shard.Hash)
 		if err != nil {
 			return fmt.Errorf("read Entire checkpoint shard: %w", err)
@@ -378,9 +381,14 @@ func fetchRemoteInventory(ctx context.Context, worktreeRoot, target string) (str
 			}
 			return "", nil, errors.New("configured checkpoint objects could not be fetched")
 		}
+		fetched := make(map[string]bool, len(refspecs))
+		for _, spec := range refspecs {
+			refName, _, _ := strings.Cut(strings.TrimPrefix(spec, "+"), ":")
+			fetched[refName] = true
+		}
 		for _, pair := range strings.Split(strings.TrimSpace(string(listing)), "\n") {
 			fields := strings.Fields(pair)
-			if len(fields) != 2 {
+			if len(fields) != 2 || !fetched[fields[1]] {
 				continue
 			}
 			ref, err := repo.Reference(plumbing.ReferenceName(fields[1]), true)

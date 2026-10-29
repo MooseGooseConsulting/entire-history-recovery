@@ -4,6 +4,11 @@ Verified on 2026-10-29 with installed Entire CLI 0.12.1 and the recovery tool's
 pinned Entire v0.12.2 writer. Real sources, checkpoint identifiers, transcripts,
 digests and raw command output are retained privately.
 
+This is a dated compatibility record, not a standing acceptance result. Repeat
+the relevant local and hosted round trips when the Entire CLI or pinned writer
+version changes, or when checkpoint writing, sync, indexing, or rendering changes.
+Record the versions and observed results before relying on a new combination.
+
 ## Retained local cohort
 
 Twelve actual inactive, single-header Codex sessions produced 37 local checkpoint
