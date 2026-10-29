@@ -1,5 +1,7 @@
 # Goals
 
+The authoritative execution sequence, deduplication contract, review gates and readiness estimates are in [the implementation and rollout plan](docs/plans/history-recovery.md). The milestones below describe the project outcome; use that plan for current implementation status and sequencing.
+
 Make historical agent work useful in Entire: ingest genuine recovered sessions into the correct repository, preserve the information Entire can represent, and establish commit attribution where evidence supports it. Deliver an accurate view of landed changes, including commits that lack an Entire checkpoint.
 
 ## Order of work
