@@ -244,6 +244,61 @@ func TestSingleTurnModelBeforePrompt(t *testing.T) {
 	}
 }
 
+func TestNativeTaskIDsCorrelateModelsAcrossEventOrders(t *testing.T) {
+	var adapter agentimport.Importer
+	for _, candidate := range agentimport.All() {
+		if candidate.Name() == "codex" {
+			adapter = candidate
+			break
+		}
+	}
+	if adapter == nil {
+		t.Fatal("Codex importer missing")
+	}
+	input := `{"type":"session_meta","payload":{"id":"test","cwd":"/old"}}
+{"type":"event_msg","payload":{"type":"task_started","turn_id":"a"}}
+{"type":"turn_context","payload":{"turn_id":"a","model":"model-a"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"one"}]}}
+{"type":"event_msg","payload":{"type":"task_complete","turn_id":"a"}}
+{"type":"event_msg","payload":{"type":"task_started","turn_id":"b"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"two"}]}}
+{"type":"turn_context","payload":{"turn_id":"b","model":"model-b"}}
+{"type":"event_msg","payload":{"type":"task_complete","turn_id":"b"}}
+{"type":"event_msg","payload":{"type":"task_started","turn_id":"c"}}
+{"type":"turn_context","payload":{"turn_id":"wrong","model":"model-wrong"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"three"}]}}
+{"type":"event_msg","payload":{"type":"task_complete","turn_id":"c"}}
+`
+	turns, err := (fixedSource{Importer: adapter}).SplitTurns(agentimport.SessionFile{SessionID: "test"}, []byte(input))
+	if err != nil || len(turns) != 3 {
+		t.Fatalf("turns %d: %v", len(turns), err)
+	}
+	if turns[0].Model != "model-a" || turns[1].Model != "model-b" || turns[2].Model != "" {
+		t.Fatalf("native task model correlation wrong")
+	}
+}
+
+func TestNativeOverlappingTasksRemainUnattributed(t *testing.T) {
+	var adapter agentimport.Importer
+	for _, candidate := range agentimport.All() {
+		if candidate.Name() == "codex" {
+			adapter = candidate
+			break
+		}
+	}
+	input := `{"type":"session_meta","payload":{"id":"test","cwd":"/old"}}
+{"type":"event_msg","payload":{"type":"task_started","turn_id":"a"}}
+{"type":"event_msg","payload":{"type":"task_started","turn_id":"b"}}
+{"type":"turn_context","payload":{"turn_id":"b","model":"model-b"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"one"}]}}
+{"type":"event_msg","payload":{"type":"task_complete","turn_id":"b"}}
+`
+	turns, err := (fixedSource{Importer: adapter}).SplitTurns(agentimport.SessionFile{SessionID: "test"}, []byte(input))
+	if err != nil || len(turns) != 1 || turns[0].Model != "" {
+		t.Fatal("overlapping task was attributed")
+	}
+}
+
 func TestHeaderWithoutNewline(t *testing.T) {
 	root := t.TempDir()
 	for _, args := range [][]string{{"init", "--quiet"}, {"commit", "--quiet", "--allow-empty", "-m", "fixture"}} {

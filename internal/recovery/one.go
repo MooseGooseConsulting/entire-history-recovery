@@ -30,18 +30,75 @@ func (s fixedSource) Discover(_ string, _ string, _ time.Time, _ []string) ([]ag
 	return []agentimport.SessionFile{s.file}, nil
 }
 
-// SplitTurns keeps Entire's boundaries. Model context can precede or follow a
-// prompt, so it is safe to associate only when the session has one turn and
-// all native contexts agree. Multi-turn association needs native turn evidence.
+// SplitTurns retains Entire's boundaries and uses matching native task IDs to
+// associate contexts even when the context appears before the user message.
 func (s fixedSource) SplitTurns(file agentimport.SessionFile, full []byte) ([]agentimport.Turn, error) {
 	turns, err := s.Importer.SplitTurns(file, full)
 	if err != nil {
 		return nil, err
 	}
-	if len(turns) != 1 || turns[0].Model != "" {
+	lines := bytes.Split(full, []byte{'\n'})
+	type task struct {
+		id, model  string
+		start, end int
+		ambiguous  bool
+	}
+	var tasks []task
+	var active *task
+	for i, line := range lines {
+		var e struct {
+			Type    string `json:"type"`
+			Payload struct {
+				Type   string `json:"type"`
+				TurnID string `json:"turn_id"`
+				Model  string `json:"model"`
+			} `json:"payload"`
+		}
+		if json.Unmarshal(line, &e) != nil {
+			continue
+		}
+		if e.Type == "event_msg" && e.Payload.Type == "task_started" {
+			// Overlapping starts cannot establish an unambiguous boundary.
+			overlapped := active != nil
+			if active != nil {
+				active.ambiguous = true
+				tasks = append(tasks, *active)
+			}
+			active = &task{id: e.Payload.TurnID, start: i, end: -1, ambiguous: overlapped}
+			continue
+		}
+		if active == nil {
+			continue
+		}
+		if e.Type == "turn_context" && e.Payload.TurnID == active.id && active.id != "" && e.Payload.Model != "" {
+			if active.model != "" && active.model != e.Payload.Model {
+				active.ambiguous = true
+			}
+			active.model = e.Payload.Model
+		}
+		if e.Type == "event_msg" && e.Payload.Type == "task_complete" {
+			if e.Payload.TurnID == active.id && active.id != "" {
+				active.end = i
+			} else {
+				active.ambiguous = true
+			}
+			tasks = append(tasks, *active)
+			active = nil
+		}
+	}
+	for i := range turns {
+		for _, item := range tasks {
+			if !item.ambiguous && item.end >= 0 && item.model != "" && turns[i].LineStart >= item.start && turns[i].LineStart < item.end {
+				turns[i].Model = item.model
+				break
+			}
+		}
+	}
+	if len(turns) != 1 || turns[0].Model != "" || len(tasks) != 0 || active != nil {
 		return turns, nil
 	}
-	lines := bytes.Split(full, []byte{'\n'})
+	// Legacy single-turn sessions may lack task IDs. Only one globally
+	// unambiguous model is safe when there is exactly one prompt.
 	model, ambiguous := "", false
 	for _, line := range lines {
 		var event struct {
