@@ -4,29 +4,28 @@ This implements an initial part of slice B in the [rollout plan](plans/history-r
 The [goals](../GOALS.md) and [field catalog](entire-field-catalog.md) define the
 project outcome and persisted data contract.
 
-`internal/reconcile` is wired as a local preflight in the Codex recovery
-prototype. It reads the checkpoint inventory before `agentimport.Run`; exact
-full coverage under a different checkpoint ID is skipped, partial/conflicting
-coverage is held, and read errors stop the import. It does not establish that a
-remote or server inventory is complete.
+`AssessCodexStorage` is the Codex recovery preflight. It enumerates both pinned
+Entire Git layouts directly: the v1 metadata branch and per-checkpoint refs.
+It reads every checkpoint summary and every session metadata record, then reads
+full transcript bodies only for sessions with the candidate's session ID.
+Exact full coverage under a different checkpoint ID is skipped;
+partial/conflicting coverage and inventory errors are held before import.
 
-`ReadVisible` hydrates all sessions in every listed checkpoint, including
-names-only list stubs. A returned listing/read error, invalid summary, or
-session without identity/transcript invalidates the whole result. The pinned
-Entire store's `List` implementation can silently omit some unreadable refs or
-checkpoint trees, and its remote enumeration is best-effort. This guard cannot
-detect those omissions. Therefore the guard means “not observed in the locally
-visible inventory,” not “absent everywhere”; remote/server completeness remains
-unverified and this prototype must not be presented as global deduplication.
+The preflight does not trust upstream `PersistentStore.List` or
+`WalkCheckpointShards`, because both intentionally skip some unreadable or
+malformed entries. It validates Git refs, commit/tree targets, shard structure,
+root summaries, and all session metadata itself. For each configured Entire
+checkpoint read target, it requires a successful `ls-remote` and fetches into a
+temporary bare repository; it verifies fetched ref hashes and removes the
+temporary repository. It does not add, advance, or delete refs in the checkout.
+Any target listing, fetch, or parse failure stops the import.
 
-`AssessExact` compares a verified candidate with those records. It recognizes
-matching session/agent/transcript/boundaries irrespective of checkpoint ID or
-imported/live kind. `present` means every candidate boundary has a compatible
-visible record; additional valid boundaries for that same transcript are neutral.
-`hold` means conflicting or partial coverage needs reconciliation.
-`unseen` only means not observed in this inventory. The current local prototype
-continues to the upstream importer for unseen candidates, so this is a local
-duplicate guard, not proof that a write is globally safe.
+`AssessExact` compares a verified candidate with matching session records. It
+recognizes session/agent/transcript/boundaries irrespective of checkpoint ID or
+imported/live kind. `present` means every candidate boundary has compatible
+Git-backed coverage; `hold` means a conflict or partial coverage requires
+reconciliation. `unseen` means only that this checkout and every configured
+checkpoint Git target were enumerated without finding an exact match.
 
 Inputs must be scoped to the same code repository and use the same sanitized,
 redacted representation and verified raw-line boundaries. Repeated text at
@@ -34,5 +33,9 @@ different boundaries remains separate. Different redaction versions, partial
 snapshots, compacted exports and native event alignment require the later
 reconciliation layer; this helper deliberately holds instead of guessing.
 
-Scoped tests cover multi-session/live-ID matching and fail-closed inventory
-and partial-coverage behavior. Real-source integration remains a separate gate.
+The Entire API's ingest/index state is not covered by Git inventory. This
+prototype does not claim service-wide absence, complete server ingestion, or
+cloud deduplication. `unseen` is not proof that no server-only record exists.
+Existing tests cover different checkpoint IDs, live-style records, damaged
+inventories, and a three-checkout remote-only retry for both Git backends.
+Real-source and authenticated service readback remain separate gates.
