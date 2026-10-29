@@ -100,14 +100,14 @@ These are `CheckpointSummary` fields, distinct from the per-session fields. Aggr
 
 ## How to integrate
 
-**Recommended first implementation:** use a pinned fork or carefully maintained extension of Entire's open-source importer, adding manifest-driven discovery, historical path mappings and date handling while reusing its parsers, redaction, deterministic IDs, checkpoint writer and sync behavior. Use the stock command for sessions it already selects correctly. Add formats only after native fixtures and round-trip tests prove them. Keep the user's originals read-only.
+**First implementation:** prototype a standalone wrapper around Entire's exported importer interfaces, reusing its parsers, redaction, deterministic IDs, checkpoint writer and sync behavior. Test historical path mappings and date handling. Consider a pinned fork or patch only if the wrapper cannot safely reach a necessary boundary. Use the stock command for sessions it already selects correctly. Add formats only after native fixtures and round-trip tests prove them. Keep originals read-only.
 
 Entire CLI v0.12.2 is MIT-licensed. If code is copied or distributed, retain the upstream license and copyright notice and track the pinned upstream revision; confirm the licenses of any additional components independently.
 
 | Option | Assessment |
 |---|---|
-| Extend/fork importer | Best-supported starting point: preserves known storage, parsing and redaction behavior. Requires maintaining a version-pinned patch and proving sync/server compatibility. |
-| Standalone tool using Entire Go code | Possible if dependency boundaries and licenses allow; test imports carefully. Much of the CLI lives under `internal` or `cmd`, so independent reuse may require a fork/refactor instead of simple imports. |
+| Extend/fork importer | Fallback if a standalone wrapper cannot reach required boundaries. Preserves known behavior but requires maintaining a version-pinned patch and proving sync/server compatibility. |
+| Standalone tool using Entire Go code | Prototype first using the exported importer interface. Verify dependency boundaries, redaction setup, storage, sync and server behavior; a fork may still be necessary. |
 | Write checkpoint JSON/Git refs directly | Technically conceivable but bypasses writer invariants, sanitization, IDs and compatibility; not the initial path. |
 | Call cloud endpoints with custom payloads | No public stable checkpoint-ingestion endpoint has been established here. The documented raw API is internal and may change; the dispatch endpoint generates a report, not an import. Do not assume an undocumented endpoint can do this. |
 | Replay hooks | Hooks model live lifecycle events; replay risks false state and commit associations. Audit hooks for forward capture, not as a fake historical importer. |
