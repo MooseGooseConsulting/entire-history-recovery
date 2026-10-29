@@ -83,7 +83,7 @@ func importCommand(args []string) {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
-	result, err := recovery.ImportCodex(ctx, *repo, *source, *anchor, !*write)
+	result, err := recovery.ImportCodexVerified(ctx, *repo, *source, *anchor, digest, !*write)
 	if err != nil {
 		fail(err.Error(), 1)
 	}

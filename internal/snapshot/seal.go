@@ -10,11 +10,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
-	"os/user"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 // Sealed identifies a validated private snapshot. The source pathname is
@@ -32,41 +29,31 @@ func DefaultDir() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve user config directory: %w", err)
 	}
-	return filepath.Join(base, "entire-history-recovery", "snapshots"), nil
+	return filepath.Join(base, "entire-history-recovery"), nil
 }
 
 func EnsurePrivateDir(dir string) error {
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return fmt.Errorf("create private directory: %w", err)
+	if dir == "" {
+		return errors.New("private directory path is required")
 	}
-	if err := os.Chmod(dir, 0700); err != nil {
-		return fmt.Errorf("restrict private directory: %w", err)
-	}
-	if os.PathSeparator != '\\' {
-		return nil
-	}
-	current, err := user.Current()
-	if err != nil || !strings.HasPrefix(current.Uid, "S-") {
-		return errors.New("cannot establish current Windows user SID")
-	}
-	grant := "*" + current.Uid + ":(OI)(CI)F"
-	if out, err := exec.Command("icacls", dir, "/inheritance:r", "/grant:r", grant).CombinedOutput(); err != nil {
-		return fmt.Errorf("set private Windows ACL: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-	out, err := exec.Command("icacls", dir).CombinedOutput()
-	if err != nil {
-		return errors.New("cannot verify private Windows ACL")
-	}
-	acl := strings.ToLower(string(out))
-	for _, broad := range []string{"everyone", "authenticated users", "\\users:", "built-in\\users"} {
-		if strings.Contains(acl, broad) {
-			return fmt.Errorf("directory ACL includes broad principal %q", broad)
+	info, err := os.Lstat(dir)
+	if err == nil {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("private directory must be a real directory")
 		}
+		return verifyPrivateDirectory(dir)
 	}
-	if !strings.Contains(acl, strings.ToLower(current.Username)) && !strings.Contains(acl, strings.ToLower(current.Uid)) {
-		return errors.New("private Windows ACL does not show current owner")
+	if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect private directory: %w", err)
 	}
-	return nil
+	if err := os.Mkdir(dir, 0700); err != nil {
+		return fmt.Errorf("create private directory (parent must exist): %w", err)
+	}
+	if err := protectNewDirectory(dir); err != nil {
+		_ = os.Remove(dir)
+		return err
+	}
+	return verifyPrivateDirectory(dir)
 }
 
 // SealCodex copies a user-selected inactive native transcript into dir.
@@ -142,15 +129,23 @@ func SealCodex(source, dir string, inactive bool) (Sealed, error) {
 	// already exists; never overwrite an earlier sealed snapshot.
 	if err := os.Link(tmpName, final); err != nil {
 		if _, statErr := os.Stat(final); statErr == nil {
-			return Sealed{}, errors.New("snapshot already exists; verify its sealed contents before reuse")
+			if verifyErr := Verify(final, digest); verifyErr != nil {
+				return Sealed{}, fmt.Errorf("existing content-addressed snapshot is corrupt: %w", verifyErr)
+			}
+			return Sealed{Path: final, SHA256: digest, SessionID: sid, Bytes: n}, nil
 		}
 		return Sealed{}, fmt.Errorf("publish snapshot atomically: %w", err)
+	}
+	// The temporary name is another hard link to this inode. Remove it before
+	// making the published inode read-only, especially on Windows.
+	if err := os.Remove(tmpName); err != nil {
+		_ = os.Remove(final)
+		return Sealed{}, fmt.Errorf("remove snapshot staging link: %w", err)
 	}
 	if err := os.Chmod(final, 0400); err != nil {
 		os.Remove(final)
 		return Sealed{}, fmt.Errorf("seal snapshot read-only: %w", err)
 	}
-	_ = os.Chtimes(final, time.Time{}, time.Time{})
 	return Sealed{Path: final, SHA256: digest, SessionID: sid, Bytes: n}, nil
 }
 

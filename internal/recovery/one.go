@@ -108,6 +108,17 @@ func (s fixedSource) SplitTurns(file agentimport.SessionFile, full []byte) ([]ag
 // display anchor, not commit attribution; the caller must select it explicitly.
 // This does not expose a production command or push checkpoint data.
 func ImportCodex(ctx context.Context, repoRoot, source, anchor string, dryRun bool) (agentimport.Result, error) {
+	return importCodex(ctx, repoRoot, source, anchor, "", dryRun)
+}
+
+// ImportCodexVerified imports only when source still has the SHA-256 verified
+// by the caller. It also pins that digest across agentimport.Run's reread.
+func ImportCodexVerified(ctx context.Context, repoRoot, source, anchor, expectedSHA256 string, dryRun bool) (agentimport.Result, error) {
+	if len(expectedSHA256) != 64 { return agentimport.Result{}, errors.New("expected snapshot SHA-256 is required") }
+	return importCodex(ctx, repoRoot, source, anchor, expectedSHA256, dryRun)
+}
+
+func importCodex(ctx context.Context, repoRoot, source, anchor, expectedSHA256 string, dryRun bool) (agentimport.Result, error) {
 	var result agentimport.Result
 	if anchor == "" {
 		return result, errors.New("an explicit import display anchor is required")
@@ -129,6 +140,7 @@ func ImportCodex(ctx context.Context, repoRoot, source, anchor string, dryRun bo
 		return result, err
 	}
 	digest := sha256.Sum256(full)
+	if expectedSHA256 != "" && fmt.Sprintf("%x", digest) != expectedSHA256 { return result, errors.New("snapshot changed after verification") }
 	var adapter agentimport.Importer
 	for _, candidate := range agentimport.All() {
 		if candidate.Name() == "codex" {

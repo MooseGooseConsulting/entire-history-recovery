@@ -131,6 +131,14 @@ func TestImportRequiresExplicitDisplayAnchor(t *testing.T) {
 	}
 }
 
+func TestVerifiedImportRejectsWrongSnapshotHashBeforeCheckpointWrite(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(t.TempDir(), "source.jsonl")
+	contents := `{"type":"session_meta","payload":{"id":"verified-fixture"}}` + "\n" + `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fixture"}]}}` + "\n"
+	if err := os.WriteFile(source, []byte(contents), 0600); err != nil { t.Fatal(err) }
+	if _, err := ImportCodexVerified(context.Background(), root, source, strings.Repeat("0",40), strings.Repeat("0",64), false); err == nil { t.Fatal("mismatched expected hash accepted") }
+}
+
 func TestImportedCheckpointSurvivesIsolatedGitRemoteAndFreshClone(t *testing.T) {
 	for _, backend := range []string{"git-branch", "git-refs"} {
 		t.Run(backend, func(t *testing.T) { testCheckpointRemote(t, backend) })

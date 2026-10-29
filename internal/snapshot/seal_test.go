@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -36,8 +37,14 @@ func TestSealCodexCopiesExactBytesAndIsIdempotentlyNonOverwriting(t *testing.T) 
 	if err := Verify(snapshot.Path, snapshot.SHA256); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := SealCodex(source, dir, true); err == nil {
-		t.Fatal("existing snapshot path was overwritten")
+	reused, err := SealCodex(source, dir, true)
+	if err != nil || reused.Path != snapshot.Path || reused.SHA256 != snapshot.SHA256 {
+		t.Fatal("matching existing snapshot was not safely reused")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil { t.Fatal(err) }
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".snapshot-") { t.Fatal("temporary hard-link name remained after snapshot seal") }
 	}
 	after, err := os.ReadFile(source)
 	if err != nil || string(after) != string(original) {
@@ -67,6 +74,9 @@ func TestSealRequiresInactiveAssertionAndRejectsDamagedSources(t *testing.T) {
 		}
 	}
 	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return
+	}
 	if err != nil || len(entries) != 0 {
 		t.Fatal("failed snapshot left publishable content")
 	}
