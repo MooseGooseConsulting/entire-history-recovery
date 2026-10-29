@@ -28,7 +28,9 @@ reused; symlink snapshot files and corrupt content-addressed files are rejected.
 
 Import previews by default. `--write` writes checkpoints only into the explicit
 checkout; the caller must verify the source belongs there. The explicit anchor
-is a display commit, not evidence that the session authored it. Snapshot digest
+must be a full hexadecimal SHA resolving to an existing commit in that checkout;
+branches, abbreviations, missing objects and non-commit objects are rejected in
+both preview and write. It is a display commit, not evidence that the session authored it. Snapshot digest
 verification is carried through the importer's reads, including its later reread.
 Preview, write and retry use separate command invocations on Windows so the
 process boundary releases repository handles. In-process Windows suite cleanup

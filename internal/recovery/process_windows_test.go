@@ -27,6 +27,19 @@ func TestWindowsImportProcessReleasesRepository(t *testing.T) {
 		if err := os.WriteFile(source, []byte(integrityHeader+integrityPrompt), 0600); err != nil {
 			t.Fatal(err)
 		}
+		refsBefore := string(runHermeticGitFixture(t, root, "for-each-ref", "--format=%(refname) %(objectname)"))
+		treeSHA := strings.TrimSpace(string(runHermeticGitFixture(t, root, "rev-parse", "HEAD^{tree}")))
+		for _, badAnchor := range []string{"HEAD", "not-a-sha", strings.Repeat("a", 40), treeSHA} {
+			for _, preview := range []bool{true, false} {
+				result, err := ImportCodex(context.Background(), root, source, badAnchor, preview)
+				if err == nil || result.TurnsImported != 0 {
+					t.Fatal("invalid display anchor accepted by preview or write")
+				}
+			}
+		}
+		if string(runHermeticGitFixture(t, root, "for-each-ref", "--format=%(refname) %(objectname)")) != refsBefore {
+			t.Fatal("rejected display anchor changed repository refs")
+		}
 		if _, err := ImportCodex(context.Background(), root, source, strings.TrimSpace(string(anchorBytes)), false); err != nil {
 			t.Fatal(err)
 		}

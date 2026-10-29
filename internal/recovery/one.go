@@ -160,6 +160,10 @@ func importCodex(ctx context.Context, repoRoot, source, anchor, expectedSHA256 s
 		return result, fmt.Errorf("open destination repository: %w", err)
 	}
 	defer repo.Close()
+	anchor, err = validateDisplayAnchor(repo, anchor)
+	if err != nil {
+		return result, err
+	}
 	ctx = settings.WithWorktreeRoot(ctx, root)
 	if err := strategy.EnsureRedactionConfigured(ctx); err != nil {
 		return result, fmt.Errorf("configure redaction: %w", err)
