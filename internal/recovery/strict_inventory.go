@@ -3,11 +3,15 @@ package recovery
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +20,7 @@ import (
 	cp "github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	remotegit "github.com/entireio/cli/cmd/entire/cli/checkpoint/remote"
+	"github.com/entireio/cli/cmd/entire/cli/execx"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
@@ -362,7 +367,7 @@ func fetchRemoteInventory(ctx context.Context, worktreeRoot, target string) (str
 	}
 	ctx, cancel := context.WithTimeout(ctx, configuredInventoryTimeout)
 	defer cancel()
-	listing, err := remotegit.LsRemoteInDir(ctx, worktreeRoot, target, cp.CheckpointRefPrefix+"*", "refs/heads/"+paths.MetadataBranchName)
+	listing, err := strictLsRemote(ctx, worktreeRoot, target, cp.CheckpointRefPrefix+"*", "refs/heads/"+paths.MetadataBranchName)
 	if err != nil {
 		return "", nil, errors.New("configured checkpoint ref listing failed")
 	}
@@ -379,7 +384,7 @@ func fetchRemoteInventory(ctx context.Context, worktreeRoot, target string) (str
 		return "", nil, err
 	}
 	if len(refspecs) > 0 {
-		_, err = remotegit.Fetch(ctx, remotegit.FetchOptions{Remote: target, RefSpecs: refspecs, NoTags: true, NoFilter: true, Dir: temp, ExtraArgs: []string{"--no-write-fetch-head"}})
+		err = fetchStrictObjects(ctx, worktreeRoot, temp, target, refspecs)
 		if err != nil {
 			_ = repo.Close()
 			return "", nil, errors.New("configured checkpoint objects could not be fetched")
@@ -402,6 +407,293 @@ func fetchRemoteInventory(ctx context.Context, worktreeRoot, target string) (str
 		}
 	}
 	return temp, repo, nil
+}
+
+// fetchStrictObjects fetches into an isolated bare repository while applying
+// the source checkout's local Git transport settings to this command only.
+// The upstream remote.Fetch helper inherits process-wide environment and
+// cannot accept command-scoped Git configuration, while copying credentials
+// into the temporary repository would persist them on disk.
+func fetchStrictObjects(ctx context.Context, worktreeRoot, bareDir, target string, refspecs []string) error {
+	env, err := strictGitEnv(worktreeRoot, target)
+	if err != nil {
+		return err
+	}
+	args := []string{"fetch", "--no-auto-gc", "--no-tags", "--no-write-fetch-head", target}
+	args = append(args, refspecs...)
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = bareDir
+	cmd.Env = env
+	cmd.Stdin = nil
+	execx.TerminateOnCancel(cmd)
+	if err := cmd.Run(); err != nil {
+		// Do not expose transport URLs, helper output, or credentials through
+		// error strings; the caller reports a stable generic failure.
+		return errors.New("git fetch failed")
+	}
+	return nil
+}
+
+func strictLsRemote(ctx context.Context, worktreeRoot, target string, patterns ...string) ([]byte, error) {
+	transportConfig, err := readLocalTransportConfig(worktreeRoot)
+	if err != nil {
+		return nil, err
+	}
+	// Run from the checkout so Git loads its local and worktree config itself.
+	// Forwarding those same entries through GIT_CONFIG_COUNT would duplicate
+	// every multi-valued HTTP header on this command.
+	env := sanitizeGitRepositoryEnv(os.Environ())
+	env = replaceEnvValue(env, "GIT_TERMINAL_PROMPT", "0")
+	env = replaceEnvValue(env, "GCM_INTERACTIVE", "Never")
+	env = appendCheckpointTokenIfNeeded(env, target, target+"/info/refs", transportConfig)
+	args := append([]string{"ls-remote", target}, patterns...)
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = worktreeRoot
+	cmd.Env = env
+	cmd.Stdin = nil
+	execx.TerminateOnCancel(cmd)
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, errors.New("git remote ref listing failed")
+	}
+	return output, nil
+}
+
+func strictGitEnv(repoRoot, target string) ([]string, error) {
+	transportConfig, err := readLocalTransportConfig(repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	env := appendGitConfigEnv(sanitizeGitRepositoryEnv(os.Environ()), transportConfig)
+	env = replaceEnvValue(env, "GIT_TERMINAL_PROMPT", "0")
+	env = replaceEnvValue(env, "GCM_INTERACTIVE", "Never")
+	return appendCheckpointTokenIfNeeded(env, target, target, transportConfig), nil
+}
+
+func appendCheckpointTokenIfNeeded(env []string, target, requestURL string, transportConfig []gitConfigSetting) []string {
+	if token := strings.TrimSpace(os.Getenv(remotegit.CheckpointTokenEnvVar)); token != "" && validCheckpointToken(token) && !hasRepositoryAuthorizationHeader(transportConfig, requestURL) {
+		if parsed, parseErr := remotegit.ParseURL(target); parseErr == nil && parsed.Protocol == remotegit.ProtocolHTTPS {
+			value := "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+token))
+			return appendGitConfigEnv(env, []gitConfigSetting{{key: "http." + target + ".extraheader", value: value}})
+		}
+	}
+	return env
+}
+
+func sanitizeGitRepositoryEnv(env []string) []string {
+	const keys = "|GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_INDEX_FILE|GIT_OBJECT_DIRECTORY|GIT_OBJECT_DIRECTORY_RELATIVE|GIT_ALTERNATE_OBJECT_DIRECTORIES|GIT_QUARANTINE_PATH|GIT_SHALLOW_FILE|GIT_REPLACE_REF_BASE|GIT_NAMESPACE|GIT_CEILING_DIRECTORIES|"
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.Contains(keys, "|"+strings.ToUpper(key)+"|") {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
+}
+
+type gitConfigSetting struct {
+	key   string
+	value string
+}
+
+func readLocalTransportConfig(repoRoot string) ([]gitConfigSetting, error) {
+	pattern := `^(core\.sshcommand|core\.askpass|core\.gitproxy|credential\..*|http\..*|url\..*\.insteadof|protocol\..*\.allow|ssh\.variant)$`
+	cmd := exec.Command("git", "-C", repoRoot, "config", "--local", "--null", "--get-regexp", pattern)
+	cmd.Env = sanitizeGitRepositoryEnv(os.Environ())
+	output, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 && len(output) == 0 {
+			output = nil
+		} else {
+			return nil, errors.New("could not read repository-local Git transport settings")
+		}
+	}
+	settings, err := parseGitConfigOutput(output)
+	if err != nil {
+		return nil, err
+	}
+	worktreeConfig, err := gitWorktreeConfigEnabled(repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	if worktreeConfig {
+		cmd := exec.Command("git", "-C", repoRoot, "config", "--worktree", "--null", "--get-regexp", pattern)
+		output, err := cmd.Output()
+		if err != nil {
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 || len(output) != 0 {
+				return nil, errors.New("could not read worktree-local Git transport settings")
+			}
+		}
+		worktreeSettings, err := parseGitConfigOutput(output)
+		if err != nil {
+			return nil, err
+		}
+		settings = append(settings, worktreeSettings...)
+	}
+	return settings, nil
+}
+
+// hasRepositoryAuthorizationHeader gives an explicit repository-local HTTP
+// Authorization header precedence over ENTIRE_CHECKPOINT_TOKEN. Sending both
+// produces ambiguous duplicate Authorization headers. Other configured HTTP
+// headers remain intact because we do not reset http.extraHeader wholesale.
+func hasRepositoryAuthorizationHeader(settings []gitConfigSetting, target string) bool {
+	for _, setting := range settings {
+		section, generic, ok := httpExtraHeaderSection(setting.key)
+		if !ok || (!generic && !httpConfigURLMatches(section, target)) {
+			continue
+		}
+		name, value, ok := strings.Cut(setting.value, ":")
+		if ok && strings.EqualFold(strings.TrimSpace(name), "authorization") && strings.TrimSpace(value) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func httpExtraHeaderSection(key string) (section string, generic, ok bool) {
+	if strings.EqualFold(key, "http.extraheader") {
+		return "", true, true
+	}
+	const prefix, suffix = "http.", ".extraheader"
+	if len(key) <= len(prefix)+len(suffix) || !strings.EqualFold(key[:len(prefix)], prefix) || !strings.EqualFold(key[len(key)-len(suffix):], suffix) {
+		return "", false, false
+	}
+	return key[len(prefix) : len(key)-len(suffix)], false, true
+}
+
+func httpConfigURLMatches(section, target string) bool {
+	configured, err := url.Parse(section)
+	if err != nil || configured.Scheme == "" || configured.Hostname() == "" {
+		return false
+	}
+	request, err := url.Parse(target)
+	if err != nil || !strings.EqualFold(configured.Scheme, request.Scheme) || request.Hostname() == "" {
+		return false
+	}
+	configuredHost := strings.ToLower(configured.Hostname())
+	requestHost := strings.ToLower(request.Hostname())
+	if strings.HasPrefix(configuredHost, "*.") {
+		suffix := strings.TrimPrefix(configuredHost, "*")
+		prefix := strings.TrimSuffix(requestHost, suffix)
+		if prefix == requestHost || prefix == "" || strings.Contains(prefix, ".") {
+			return false
+		}
+	} else if configuredHost != requestHost {
+		return false
+	}
+	if effectiveHTTPPort(configured) != effectiveHTTPPort(request) {
+		return false
+	}
+	if configured.User != nil {
+		configuredUser := configured.User.Username()
+		requestUser := ""
+		if request.User != nil {
+			requestUser = request.User.Username()
+		}
+		if configuredUser != requestUser {
+			return false
+		}
+	}
+	configuredPath := strings.TrimSuffix(configured.EscapedPath(), "/")
+	requestPath := strings.TrimSuffix(request.EscapedPath(), "/")
+	if configuredPath != "" && configuredPath != "/" && requestPath != configuredPath && !strings.HasPrefix(requestPath, configuredPath+"/") {
+		return false
+	}
+	return true
+}
+
+func effectiveHTTPPort(parsed *url.URL) string {
+	if port := parsed.Port(); port != "" {
+		return port
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	default:
+		return ""
+	}
+}
+
+func parseGitConfigOutput(output []byte) ([]gitConfigSetting, error) {
+	var settings []gitConfigSetting
+	for _, record := range bytes.Split(output, []byte{0}) {
+		if len(record) == 0 {
+			continue
+		}
+		key, value, ok := bytes.Cut(record, []byte{'\n'})
+		if !ok || len(key) == 0 {
+			return nil, errors.New("repository-local Git transport settings are malformed")
+		}
+		settings = append(settings, gitConfigSetting{key: string(key), value: string(value)})
+	}
+	return settings, nil
+}
+
+func gitWorktreeConfigEnabled(repoRoot string) (bool, error) {
+	cmd := exec.Command("git", "-C", repoRoot, "config", "--local", "--bool", "--get", "extensions.worktreeConfig")
+	cmd.Env = sanitizeGitRepositoryEnv(os.Environ())
+	output, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 && len(output) == 0 {
+			return false, nil
+		}
+		return false, errors.New("could not inspect worktree Git configuration")
+	}
+	return strings.TrimSpace(string(output)) == "true", nil
+}
+
+func appendGitConfigEnv(env []string, settings []gitConfigSetting) []string {
+	count := 0
+	for _, entry := range env {
+		if value, ok := strings.CutPrefix(entry, "GIT_CONFIG_COUNT="); ok {
+			if n, err := strconv.Atoi(value); err == nil && n > 0 {
+				count = n
+			}
+			break
+		}
+	}
+	filtered := make([]string, 0, len(env)+len(settings)*2)
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "GIT_CONFIG_COUNT=") {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	for i, setting := range settings {
+		index := count + i
+		filtered = append(filtered, fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", index, setting.key))
+		filtered = append(filtered, fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", index, setting.value))
+	}
+	return append(filtered, fmt.Sprintf("GIT_CONFIG_COUNT=%d", count+len(settings)))
+}
+
+func replaceEnvValue(env []string, key, value string) []string {
+	prefix := key + "="
+	filtered := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		entryKey, _, _ := strings.Cut(entry, "=")
+		if !strings.EqualFold(entryKey, key) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return append(filtered, prefix+value)
+}
+
+func validCheckpointToken(token string) bool {
+	for _, b := range []byte(token) {
+		if b < 0x20 || b == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 func strictRemoteRefspecs(listing []byte) ([]string, error) {
