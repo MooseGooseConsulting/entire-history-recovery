@@ -31,7 +31,7 @@ func TestWindowsImportProcessReleasesRepository(t *testing.T) {
 		treeSHA := strings.TrimSpace(string(runHermeticGitFixture(t, root, "rev-parse", "HEAD^{tree}")))
 		for _, badAnchor := range []string{"HEAD", "not-a-sha", strings.Repeat("a", 40), treeSHA} {
 			for _, preview := range []bool{true, false} {
-				result, err := ImportCodex(context.Background(), root, source, badAnchor, preview)
+				result, err := ImportCodex(withTestInventoryWorkspace(t, context.Background()), root, source, badAnchor, preview)
 				if err == nil || result.TurnsImported != 0 {
 					t.Fatal("invalid display anchor accepted by preview or write")
 				}
@@ -40,13 +40,13 @@ func TestWindowsImportProcessReleasesRepository(t *testing.T) {
 		if string(runHermeticGitFixture(t, root, "for-each-ref", "--format=%(refname) %(objectname)")) != refsBefore {
 			t.Fatal("rejected display anchor changed repository refs")
 		}
-		if _, err := ImportCodex(context.Background(), root, source, strings.TrimSpace(string(anchorBytes)), false); err != nil {
+		if _, err := ImportCodex(withTestInventoryWorkspace(t, context.Background()), root, source, strings.TrimSpace(string(anchorBytes)), false); err != nil {
 			t.Fatal(err)
 		}
 		return
 	}
 
-	base := t.TempDir()
+	base := testTempDir(t)
 	globalConfig := filepath.Join(base, "empty.gitconfig")
 	if err := os.WriteFile(globalConfig, nil, 0600); err != nil {
 		t.Fatal("create empty global Git config")

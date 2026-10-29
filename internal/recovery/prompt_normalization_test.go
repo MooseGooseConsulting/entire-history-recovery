@@ -14,7 +14,7 @@ import (
 
 func importedPromptFixture(t *testing.T, body string) (string, string, string) {
 	t.Helper()
-	root := t.TempDir()
+	root := testTempDir(t)
 	source, anchor := syntheticCodexSource(t, root)
 	contents := `{"timestamp":"2020-01-01T00:00:00Z","type":"session_meta","payload":{"id":"session-prompt-normalization","cwd":"/deleted/checkout"}}` + "\n" + body
 	if err := os.WriteFile(source, []byte(contents), 0600); err != nil {
@@ -30,7 +30,7 @@ func readImportedPrompt(t *testing.T, root string) (*checkpoint.SessionContent, 
 		t.Fatal(err)
 	}
 	defer repo.Close()
-	ctx := settings.WithWorktreeRoot(context.Background(), root)
+	ctx := settings.WithWorktreeRoot(withTestInventoryWorkspace(t, context.Background()), root)
 	stores, err := checkpoint.Open(ctx, repo, checkpoint.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -55,7 +55,7 @@ func TestImportFiltersInjectedPromptButKeepsFullTranscript(t *testing.T) {
 			`{"timestamp":"2020-01-01T00:00:02Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"setup work"}]}}`+"\n"+
 			`{"timestamp":"2020-01-01T00:00:03Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"the actual request"}]}}`+"\n"+
 			`{"timestamp":"2020-01-01T00:00:04Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"the answer"}]}}`+"\n")
-	result, err := ImportCodex(context.Background(), root, source, anchor, false)
+	result, err := ImportCodex(withTestInventoryWorkspace(t, context.Background()), root, source, anchor, false)
 	if err != nil || result.TurnsImported != 1 {
 		t.Fatalf("import result: %+v, %v", result, err)
 	}
@@ -76,7 +76,7 @@ func TestImportKeepsContextOnlyWorkAsEmptyPromptEvidence(t *testing.T) {
 			`{"timestamp":"2020-01-01T00:00:02Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"context-only work"}]}}`+"\n"+
 			`{"timestamp":"2020-01-01T00:00:03Z","type":"response_item","payload":{"type":"function_call","name":"shell","input":"pwd"}}`+"\n"+
 			`{"timestamp":"2020-01-01T00:00:04Z","type":"response_item","payload":{"type":"function_call_output","output":"/repo"}}`+"\n")
-	result, err := ImportCodex(context.Background(), root, source, anchor, false)
+	result, err := ImportCodex(withTestInventoryWorkspace(t, context.Background()), root, source, anchor, false)
 	if err != nil || result.TurnsImported != 1 {
 		t.Fatalf("context evidence import result: %+v, %v", result, err)
 	}

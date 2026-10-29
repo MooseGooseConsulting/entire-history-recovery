@@ -17,7 +17,7 @@ import (
 
 func integrityRepo(t *testing.T) string {
 	t.Helper()
-	root := t.TempDir()
+	root := testTempDir(t)
 	for _, args := range [][]string{{"init", "--quiet"}, {"-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "--allow-empty", "-m", "fixture"}} {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = root
@@ -43,13 +43,13 @@ func TestAppendOnlyRecoveryIsHeldWhenTranscriptChanges(t *testing.T) {
 		t.Run(backend, func(t *testing.T) {
 			t.Setenv("ENTIRE_CHECKPOINTS_PRIMARY", backend)
 			root := integrityRepo(t)
-			source := filepath.Join(t.TempDir(), "session.jsonl")
+			source := filepath.Join(testTempDir(t), "session.jsonl")
 			original := integrityHeader + integrityPrompt
 			if err := os.WriteFile(source, []byte(original), 0600); err != nil {
 				t.Fatal(err)
 			}
 			anchor := destinationHead(t, root)
-			first, err := ImportCodex(context.Background(), root, source, anchor, false)
+			first, err := ImportCodex(withTestInventoryWorkspace(t, context.Background()), root, source, anchor, false)
 			if err != nil || first.TurnsImported != 1 {
 				t.Fatalf("initial: %+v %v", first, err)
 			}
@@ -59,7 +59,7 @@ func TestAppendOnlyRecoveryIsHeldWhenTranscriptChanges(t *testing.T) {
 			if err := os.WriteFile(source, []byte(original+integrityPrompt), 0600); err != nil {
 				t.Fatal(err)
 			}
-			second, err := ImportCodex(context.Background(), root, source, anchor, false)
+			second, err := ImportCodex(withTestInventoryWorkspace(t, context.Background()), root, source, anchor, false)
 			if err == nil || second.TurnsImported != 0 {
 				t.Fatalf("changed transcript was not held: %+v %v", second, err)
 			}
@@ -67,12 +67,12 @@ func TestAppendOnlyRecoveryIsHeldWhenTranscriptChanges(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			stores, err := checkpoint.Open(settings.WithWorktreeRoot(context.Background(), root), repo, checkpoint.OpenOptions{})
+			stores, err := checkpoint.Open(settings.WithWorktreeRoot(withTestInventoryWorkspace(t, context.Background()), root), repo, checkpoint.OpenOptions{})
 			if err != nil {
 				_ = repo.Close()
 				t.Fatal(err)
 			}
-			items, err := stores.Persistent.List(context.Background())
+			items, err := stores.Persistent.List(withTestInventoryWorkspace(t, context.Background()))
 			_ = repo.Close()
 			if err != nil || len(items) != 1 {
 				t.Fatalf("held append changed checkpoint inventory: %d items, %v", len(items), err)
@@ -94,12 +94,12 @@ func TestChangingCheckpointBackendDoesNotDuplicateSession(t *testing.T) {
 		t.Run(initial, func(t *testing.T) {
 			t.Setenv("ENTIRE_CHECKPOINTS_PRIMARY", initial)
 			root := integrityRepo(t)
-			source := filepath.Join(t.TempDir(), "session.jsonl")
+			source := filepath.Join(testTempDir(t), "session.jsonl")
 			if err := os.WriteFile(source, []byte(integrityHeader+integrityPrompt), 0600); err != nil {
 				t.Fatal(err)
 			}
 			anchor := destinationHead(t, root)
-			first, err := ImportCodex(context.Background(), root, source, anchor, false)
+			first, err := ImportCodex(withTestInventoryWorkspace(t, context.Background()), root, source, anchor, false)
 			if err != nil || first.TurnsImported != 1 {
 				t.Fatalf("initial: %+v %v", first, err)
 			}
@@ -108,7 +108,7 @@ func TestChangingCheckpointBackendDoesNotDuplicateSession(t *testing.T) {
 				next = "git-branch"
 			}
 			t.Setenv("ENTIRE_CHECKPOINTS_PRIMARY", next)
-			second, err := ImportCodex(context.Background(), root, source, anchor, false)
+			second, err := ImportCodex(withTestInventoryWorkspace(t, context.Background()), root, source, anchor, false)
 			if err != nil || second.TurnsImported != 0 || second.TurnsSkipped != 1 {
 				t.Fatalf("backend migration: %+v %v", second, err)
 			}
@@ -130,13 +130,13 @@ func TestDamagedSessionRejectedBeforeAnyCheckpointWrite(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			root := integrityRepo(t)
-			source := filepath.Join(t.TempDir(), "session.jsonl")
+			source := filepath.Join(testTempDir(t), "session.jsonl")
 			content := integrityHeader + integrityPrompt + damage
 			if err := os.WriteFile(source, []byte(content), 0600); err != nil {
 				t.Fatal(err)
 			}
 			for _, dry := range []bool{true, false} {
-				result, err := ImportCodex(context.Background(), root, source, destinationHead(t, root), dry)
+				result, err := ImportCodex(withTestInventoryWorkspace(t, context.Background()), root, source, destinationHead(t, root), dry)
 				if err == nil || result.TurnsImported != 0 {
 					t.Fatalf("damaged session accepted: dry=%v result=%+v error=%v", dry, result, err)
 				}
@@ -160,11 +160,11 @@ func TestDamagedSessionRejectedBeforeAnyCheckpointWrite(t *testing.T) {
 
 func TestDryRunDoesNotCreateCheckpointRefs(t *testing.T) {
 	root := integrityRepo(t)
-	source := filepath.Join(t.TempDir(), "session.jsonl")
+	source := filepath.Join(testTempDir(t), "session.jsonl")
 	if err := os.WriteFile(source, []byte(integrityHeader+integrityPrompt), 0600); err != nil {
 		t.Fatal(err)
 	}
-	result, err := ImportCodex(context.Background(), root, source, destinationHead(t, root), true)
+	result, err := ImportCodex(withTestInventoryWorkspace(t, context.Background()), root, source, destinationHead(t, root), true)
 	if err != nil || result.TurnsImported != 1 {
 		t.Fatalf("preview: %+v %v", result, err)
 	}

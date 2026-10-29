@@ -38,7 +38,7 @@ func TestStrictBranchRejectsUnknownRootLayout(t *testing.T) {
 }
 
 func TestWithInventoryWorkspaceRequiresPrivateDirectory(t *testing.T) {
-	parent := t.TempDir()
+	parent := testTempDir(t)
 	private := filepath.Join(parent, "private")
 	if err := snapshot.EnsurePrivateDir(private); err != nil {
 		t.Fatal(err)
@@ -70,7 +70,7 @@ func runStrictGit(t *testing.T, dir string, args ...string) []byte {
 
 func useStrictInventoryTemp(t *testing.T) string {
 	t.Helper()
-	base := filepath.Join(t.TempDir(), "inventory-temp")
+	base := filepath.Join(testTempDir(t), "inventory-temp")
 	if err := os.MkdirAll(base, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func useStrictInventoryTemp(t *testing.T) string {
 
 func withTestInventoryWorkspace(t *testing.T, ctx context.Context) context.Context {
 	t.Helper()
-	workspace := filepath.Join(t.TempDir(), "private-inventory")
+	workspace := filepath.Join(testTempDir(t), "private-inventory")
 	if err := snapshot.EnsurePrivateDir(workspace); err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func configureCheckpointBackend(t *testing.T, root, backend string) {
 
 func writeStrictCodexSource(t *testing.T) string {
 	t.Helper()
-	source := filepath.Join(t.TempDir(), "session.jsonl")
+	source := filepath.Join(testTempDir(t), "session.jsonl")
 	text := `{"type":"session_meta","payload":{"id":"remote-only-session"}}
 {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"remote coverage probe"}]}}
 `
@@ -131,15 +131,15 @@ func writeStrictCodexSource(t *testing.T) string {
 func TestStrictConfiguredRemoteFindsRemoteOnlyCheckpointAndRetryIsNoop(t *testing.T) {
 	for _, backend := range []string{"git-branch", "git-refs"} {
 		t.Run(backend, func(t *testing.T) {
-			emptyConfig := filepath.Join(t.TempDir(), "empty.gitconfig")
+			emptyConfig := filepath.Join(testTempDir(t), "empty.gitconfig")
 			tempBase := useStrictInventoryTemp(t)
 			if err := os.WriteFile(emptyConfig, nil, 0600); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("GIT_CONFIG_GLOBAL", emptyConfig)
-			bare := filepath.Join(t.TempDir(), "remote.git")
+			bare := filepath.Join(testTempDir(t), "remote.git")
 			runStrictGit(t, filepath.Dir(bare), "init", "--bare", "--quiet", bare)
-			writer := filepath.Join(t.TempDir(), "writer")
+			writer := filepath.Join(testTempDir(t), "writer")
 			if err := os.MkdirAll(writer, 0700); err != nil {
 				t.Fatal(err)
 			}
@@ -156,7 +156,7 @@ func TestStrictConfiguredRemoteFindsRemoteOnlyCheckpointAndRetryIsNoop(t *testin
 			}
 			pushCheckpointStorage(t, writer, bare, backend)
 
-			reader := filepath.Join(t.TempDir(), "reader")
+			reader := filepath.Join(testTempDir(t), "reader")
 			runStrictGit(t, filepath.Dir(reader), "clone", "--quiet", "--single-branch", "--branch", "main", bare, reader)
 			configureCheckpointBackend(t, reader, backend)
 			readerRepo, err := git.PlainOpen(reader)
@@ -192,7 +192,7 @@ func TestStrictConfiguredRemoteFindsRemoteOnlyCheckpointAndRetryIsNoop(t *testin
 				t.Fatalf("reader did not verify remote-only checkpoint: %+v %v", proof, err)
 			}
 
-			retry := filepath.Join(t.TempDir(), "retry")
+			retry := filepath.Join(testTempDir(t), "retry")
 			runStrictGit(t, filepath.Dir(retry), "clone", "--quiet", "--single-branch", "--branch", "main", bare, retry)
 			configureCheckpointBackend(t, retry, backend)
 			before := runStrictGit(t, retry, "for-each-ref", "--format=%(refname) %(objectname)")
@@ -238,18 +238,23 @@ func TestStrictInventoryHoldsSameSessionWithDifferentAgent(t *testing.T) {
 func TestStrictDedicatedCheckpointRemoteFindsRemoteOnlyCheckpoint(t *testing.T) {
 	for _, backend := range []string{"git-branch", "git-refs"} {
 		t.Run(backend, func(t *testing.T) {
+			// The dedicated target resolves to a GitHub-shaped URL from Entire's
+			// settings, but the fixture must never be able to contact the network.
+			// The exact URL rewrite below routes that target to a second local bare
+			// repository; GIT_ALLOW_PROTOCOL rejects any unrewritten network URL.
+			t.Setenv("GIT_ALLOW_PROTOCOL", "file")
 			tempBase := useStrictInventoryTemp(t)
-			globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+			globalConfig := filepath.Join(testTempDir(t), "gitconfig")
 			if err := os.WriteFile(globalConfig, nil, 0600); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
-			projectBare := filepath.Join(t.TempDir(), "project.git")
-			checkpointBare := filepath.Join(t.TempDir(), "checkpoints.git")
+			projectBare := filepath.Join(testTempDir(t), "project.git")
+			checkpointBare := filepath.Join(testTempDir(t), "checkpoints.git")
 			runStrictGit(t, filepath.Dir(projectBare), "init", "--bare", "--quiet", projectBare)
 			runStrictGit(t, filepath.Dir(checkpointBare), "init", "--bare", "--quiet", checkpointBare)
 
-			writer := filepath.Join(t.TempDir(), "writer")
+			writer := filepath.Join(testTempDir(t), "writer")
 			if err := os.MkdirAll(writer, 0700); err != nil {
 				t.Fatal(err)
 			}
@@ -257,16 +262,16 @@ func TestStrictDedicatedCheckpointRemoteFindsRemoteOnlyCheckpoint(t *testing.T) 
 			runStrictGit(t, writer, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet", "--allow-empty", "-m", "initial")
 			configureCheckpointBackend(t, writer, backend)
 			source := writeStrictCodexSource(t)
-			if imported, err := ImportCodex(context.Background(), writer, source, destinationHead(t, writer), false); err != nil || imported.TurnsImported != 1 {
+			if imported, err := ImportCodex(withTestInventoryWorkspace(t, context.Background()), writer, source, destinationHead(t, writer), false); err != nil || imported.TurnsImported != 1 {
 				t.Fatalf("writer import: %+v %v", imported, err)
 			}
 			runStrictGit(t, writer, "remote", "add", "origin", projectBare)
 			runStrictGit(t, writer, "push", "--quiet", "-u", "origin", "main")
 			pushCheckpointStorage(t, writer, checkpointBare, backend)
 
-			// The checkout has a project origin owned by acme, while its separate
-			// Entire store is the configured acme/checkpoints repository. Rewrite
-			// only the derived HTTPS URL to this local bare fixture.
+			// The checkout's origin stays on the local project bare repository;
+			// Entire's separate checkpoint target is rewritten to its own local
+			// bare repository.
 			checkpointURL := "https://github.com/MooseGooseConsulting/checkpoints.git"
 			slashPath := filepath.ToSlash(checkpointBare)
 			fileURL := "file:///" + slashPath
@@ -278,13 +283,12 @@ func TestStrictDedicatedCheckpointRemoteFindsRemoteOnlyCheckpoint(t *testing.T) 
 				t.Fatal(err)
 			}
 
-			reader := filepath.Join(t.TempDir(), "reader")
+			reader := filepath.Join(testTempDir(t), "reader")
 			runStrictGit(t, filepath.Dir(reader), "clone", "--quiet", "--single-branch", "--branch", "main", projectBare, reader)
 			configureCheckpointBackend(t, reader, backend)
 			if err := os.WriteFile(filepath.Join(reader, ".entire", "settings.local.json"), []byte(`{"strategy_options":{"checkpoint_remote":{"provider":"github","repo":"MooseGooseConsulting/checkpoints"}}}`), 0600); err != nil {
 				t.Fatal(err)
 			}
-			runStrictGit(t, reader, "remote", "set-url", "origin", "https://github.com/MooseGooseConsulting/project.git")
 			if listing := runStrictGit(t, reader, "ls-remote", checkpointURL); len(strings.TrimSpace(string(listing))) == 0 {
 				t.Fatal("dedicated checkpoint remote rewrite did not reach the populated bare repository")
 			}
@@ -328,7 +332,7 @@ func TestStrictDedicatedCheckpointRemoteFindsRemoteOnlyCheckpoint(t *testing.T) 
 
 func TestStrictRemoteInventoryRequiresPrivateWorkspace(t *testing.T) {
 	tempBase := useStrictInventoryTemp(t)
-	_, repo, err := fetchRemoteInventory(context.Background(), t.TempDir(), filepath.Join(t.TempDir(), "missing.git"))
+	_, repo, err := fetchRemoteInventory(context.Background(), testTempDir(t), filepath.Join(testTempDir(t), "missing.git"))
 	if err == nil || err.Error() != "configured checkpoint inventory requires a private workspace" || repo != nil {
 		if repo != nil {
 			_ = repo.Close()
@@ -341,7 +345,7 @@ func TestStrictRemoteInventoryRequiresPrivateWorkspace(t *testing.T) {
 func TestStrictRemoteInventoryListingFailureCreatesNoRepository(t *testing.T) {
 	ctx := withTestInventoryWorkspace(t, context.Background())
 	workspace, _ := inventoryWorkspaceFromContext(ctx)
-	_, repo, err := fetchRemoteInventory(ctx, t.TempDir(), filepath.Join(t.TempDir(), "missing.git"))
+	_, repo, err := fetchRemoteInventory(ctx, testTempDir(t), filepath.Join(testTempDir(t), "missing.git"))
 	if err == nil || repo != nil {
 		if repo != nil {
 			_ = repo.Close()
