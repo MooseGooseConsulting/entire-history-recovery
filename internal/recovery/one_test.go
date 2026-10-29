@@ -71,8 +71,15 @@ func TestImportOldCodexSessionIntoDifferentRepository(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	rootSummary, err := stores.Persistent.Read(ctx, items[0].CheckpointID)
+	if err != nil || !rootSummary.Imported || len(rootSummary.LinkedCommits) != 0 {
+		t.Fatal("imported checkpoint or attribution state incorrect")
+	}
 	if data.Metadata.SessionID != "session-fixture-123" || string(data.Metadata.Agent) != "Codex" {
 		t.Fatalf("identity: %+v", data.Metadata)
+	}
+	if data.Metadata.Kind != "imported" || data.Metadata.CommitSHA == "" {
+		t.Fatal("import kind or display anchor missing")
 	}
 	if data.Metadata.CreatedAt.Year() != 2020 || data.Metadata.CheckpointTranscriptStart != 1 {
 		t.Fatalf("time or offset: %+v", data.Metadata)
