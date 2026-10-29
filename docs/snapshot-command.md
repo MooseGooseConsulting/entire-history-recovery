@@ -26,12 +26,16 @@ temporary-file cleanup; a forced process kill or host crash can still leave a
 private staging file and is not a completed snapshot.
 
 The default destination is `entire-history-recovery` under the user config
-directory. A new private directory is restricted to its owner on Unix and to the
-current user, SYSTEM and Administrators on Windows. Existing directories are
-verified without changing permissions; unsafe directories are rejected. Snapshot
-publication uses a hard link in that directory, so unsupported filesystems fail
-rather than falling back to an overwrite. Identical snapshots are verified and
-reused; symlink snapshot files and corrupt content-addressed files are rejected.
+directory. If that config directory is missing, the default command creates it
+with mode `0700` on Unix; pre-existing parent permissions are left unchanged.
+An explicit `--dir` requires its parent directory to exist. A new private
+snapshot directory is restricted to its owner on Unix and to the current user,
+SYSTEM and Administrators on Windows. Existing snapshot directories are
+verified without changing permissions; unsafe directories are rejected.
+Snapshot publication uses a hard link in that directory, so unsupported
+filesystems fail rather than falling back to an overwrite. Identical snapshots
+are verified and reused; symlink snapshot files and corrupt content-addressed
+files are rejected.
 
 Import previews by default. `--write` writes checkpoints only into the explicit
 checkout; the caller must verify the source belongs there. The explicit anchor

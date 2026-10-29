@@ -39,6 +39,26 @@ func DefaultDir() (string, error) {
 	return filepath.Join(base, "entire-history-recovery"), nil
 }
 
+// EnsureDefaultPrivateDir creates the default snapshot directory, including a
+// missing user config directory. MkdirAll leaves existing directory
+// permissions unchanged; the snapshot leaf is then verified or protected by
+// EnsurePrivateDir. Callers that accept an explicit directory should use
+// EnsurePrivateDir directly so a missing custom parent remains an error.
+func EnsureDefaultPrivateDir() (string, error) {
+	dir, err := DefaultDir()
+	if err != nil {
+		return "", err
+	}
+	parent := filepath.Dir(dir)
+	if err := os.MkdirAll(parent, 0700); err != nil {
+		return "", fmt.Errorf("create user config directory: %w", err)
+	}
+	if err := EnsurePrivateDir(dir); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
 func EnsurePrivateDir(dir string) error {
 	if dir == "" {
 		return errors.New("private directory path is required")

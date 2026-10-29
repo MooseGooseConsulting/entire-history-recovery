@@ -41,12 +41,11 @@ func snapshotCommand(args []string) {
 	}
 	if *dir == "" {
 		var err error
-		*dir, err = snapshot.DefaultDir()
+		*dir, err = snapshot.EnsureDefaultPrivateDir()
 		if err != nil {
 			fail(err.Error(), 1)
 		}
-	}
-	if err := snapshot.EnsurePrivateDir(*dir); err != nil {
+	} else if err := snapshot.EnsurePrivateDir(*dir); err != nil {
 		fail(err.Error(), 1)
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
