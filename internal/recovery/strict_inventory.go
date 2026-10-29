@@ -66,10 +66,10 @@ func AssessCodexStorage(ctx context.Context, repoRoot string, repo *git.Reposito
 				return result, fmt.Errorf("enumerate configured checkpoint target %d: %w", i+1, openErr)
 			}
 			remoteData, readErr := readStrictRepository(ctx, remoteRoot, remoteRepo, nil, candidate)
-			_ = remoteRepo.Close()
-			_ = os.RemoveAll(remoteRoot)
-			if readErr != nil {
-				return result, fmt.Errorf("read configured checkpoint target %d: %w", i+1, readErr)
+			closeErr := remoteRepo.Close()
+			removeErr := os.RemoveAll(remoteRoot)
+			if readErr != nil || closeErr != nil || removeErr != nil {
+				return result, fmt.Errorf("read configured checkpoint target %d: %w", i+1, errors.Join(readErr, closeErr, removeErr))
 			}
 			result.CheckpointTrees += remoteData.count
 			records = append(records, remoteData.records...)
