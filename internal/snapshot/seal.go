@@ -99,6 +99,32 @@ func CheckPrivateDir(dir string) error {
 	return verifyPrivateDirectory(dir)
 }
 
+// CreatePrivateTempDir creates a private temporary directory inside an
+// existing private parent. The returned path is caller-owned and must be
+// removed by that caller after all users of the directory have exited.
+func CreatePrivateTempDir(parent, prefix string) (string, error) {
+	if err := CheckPrivateDir(parent); err != nil {
+		return "", fmt.Errorf("verify private temporary parent: %w", err)
+	}
+	dir, err := os.MkdirTemp(parent, prefix)
+	if err != nil {
+		return "", fmt.Errorf("create private temporary directory: %w", err)
+	}
+	if err := protectNewDirectory(dir); err != nil {
+		if removeErr := os.RemoveAll(dir); removeErr != nil {
+			return "", errors.Join(err, fmt.Errorf("remove temporary directory after protection failure: %w", removeErr))
+		}
+		return "", err
+	}
+	if err := verifyPrivateDirectory(dir); err != nil {
+		if removeErr := os.RemoveAll(dir); removeErr != nil {
+			return "", errors.Join(err, fmt.Errorf("remove temporary directory after verification failure: %w", removeErr))
+		}
+		return "", err
+	}
+	return dir, nil
+}
+
 // SealCodex copies a user-selected inactive native transcript into dir.
 // inactive must be an explicit operator assertion. This function detects
 // changes during the copy but cannot prove a remote agent process is stopped;

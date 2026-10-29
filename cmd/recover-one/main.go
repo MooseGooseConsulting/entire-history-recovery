@@ -3,17 +3,26 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
 
 	"github.com/MooseGooseConsulting/entire-history-recovery/internal/recovery"
 	"github.com/MooseGooseConsulting/entire-history-recovery/internal/snapshot"
+)
+
+const (
+	inventoryWorkerEnv    = "ENTIRE_RECOVERY_IMPORT_WORKER"
+	inventoryWorkspaceEnv = "ENTIRE_RECOVERY_IMPORT_WORKSPACE"
+	inventoryWorkspaceTag = ".entire-import-inventory-workspace-"
 )
 
 func main() {
@@ -87,13 +96,116 @@ func importCommand(args []string) {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
-	result, err := recovery.ImportCodexVerified(ctx, *repo, *source, *anchor, digest, !*write)
+	if os.Getenv(inventoryWorkerEnv) == "1" {
+		workspace := os.Getenv(inventoryWorkspaceEnv)
+		if workspace == "" {
+			fail("import worker inventory workspace is missing", 1)
+		}
+		ctx, err := recovery.WithInventoryWorkspace(ctx, workspace)
+		if err != nil {
+			fail(err.Error(), 1)
+		}
+		writeImportResult(ctx, *repo, *source, *anchor, digest, !*write)
+		return
+	}
+	workspaceParent := filepath.Dir(*source)
+	argsForChild := []string{"import", "--repo", *repo, "--snapshot", *source, "--anchor", *anchor}
+	if *write {
+		argsForChild = append(argsForChild, "--write")
+	}
+	stdout, stderr, err := runImportWorker(ctx, workspaceParent, argsForChild)
+	if err != nil {
+		if len(stderr) > 0 {
+			fmt.Fprint(os.Stderr, strings.ReplaceAll(string(stderr), workspaceParent, "<private snapshot directory>"))
+		}
+		fail(err.Error(), 1)
+	}
+	if _, err := os.Stdout.Write(stdout); err != nil {
+		fail(fmt.Sprintf("write import result: %v", err), 1)
+	}
+}
+
+func writeImportResult(ctx context.Context, repo, source, anchor, digest string, dryRun bool) {
+	result, err := recovery.ImportCodexVerified(ctx, repo, source, anchor, digest, dryRun)
 	if err != nil {
 		fail(err.Error(), 1)
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
 		fail(err.Error(), 1)
 	}
+}
+
+func runImportWorker(ctx context.Context, privateParent string, args []string) (stdout, stderr []byte, runErr error) {
+	workspace, err := snapshot.CreatePrivateTempDir(privateParent, inventoryWorkspaceTag)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() {
+		cleanupErr := removeOwnedInventoryWorkspace(workspace, privateParent)
+		if cleanupErr != nil {
+			stdout = nil
+			runErr = errors.Join(runErr, fmt.Errorf("clean private inventory workspace: %w", cleanupErr))
+		}
+	}()
+
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, nil, fmt.Errorf("locate import worker executable: %w", err)
+	}
+	cmd := exec.CommandContext(ctx, executable, args...)
+	cmd.Env = withInternalInventoryEnv(os.Environ(), workspace)
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	err = cmd.Run()
+	stdout = bytes.ReplaceAll(outBuf.Bytes(), []byte(workspace), []byte("<private inventory workspace>"))
+	stderr = bytes.ReplaceAll(errBuf.Bytes(), []byte(workspace), []byte("<private inventory workspace>"))
+	if err != nil {
+		return nil, stderr, fmt.Errorf("import worker failed: %w", err)
+	}
+	return stdout, stderr, nil
+}
+
+func withInternalInventoryEnv(env []string, workspace string) []string {
+	filtered := make([]string, 0, len(env)+2)
+	for _, entry := range env {
+		key, _, _ := strings.Cut(entry, "=")
+		if key == inventoryWorkerEnv || key == inventoryWorkspaceEnv {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return append(filtered, inventoryWorkerEnv+"=1", inventoryWorkspaceEnv+"="+workspace)
+}
+
+func removeOwnedInventoryWorkspace(workspace, privateParent string) error {
+	parent, err := filepath.Abs(privateParent)
+	if err != nil {
+		return fmt.Errorf("resolve private snapshot directory: %w", err)
+	}
+	owned, err := filepath.Abs(workspace)
+	if err != nil {
+		return fmt.Errorf("resolve inventory workspace: %w", err)
+	}
+	if filepath.Dir(owned) != parent || !strings.HasPrefix(filepath.Base(owned), inventoryWorkspaceTag) {
+		return errors.New("refusing to remove inventory workspace outside its owned snapshot directory")
+	}
+	if err := snapshot.CheckPrivateDir(parent); err != nil {
+		return fmt.Errorf("recheck private snapshot directory: %w", err)
+	}
+	if err := snapshot.CheckPrivateDir(owned); err != nil {
+		return fmt.Errorf("recheck owned inventory workspace: %w", err)
+	}
+	if err := os.RemoveAll(owned); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(owned); !os.IsNotExist(err) {
+		if err == nil {
+			return errors.New("inventory workspace remains after removal")
+		}
+		return fmt.Errorf("verify inventory workspace removal: %w", err)
+	}
+	return nil
 }
 
 func fail(message string, code int) { fmt.Fprintln(os.Stderr, message); os.Exit(code) }
