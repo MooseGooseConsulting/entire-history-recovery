@@ -256,7 +256,7 @@ func preflightExactCoverage(ctx context.Context, reader reconcile.Reader, adapte
 	if err != nil {
 		return false, 0, fmt.Errorf("prepare %s transcript for coverage: %w", file.SessionID, err)
 	}
-	records, err := reconcile.ReadVisible(ctx, reader)
+	records, err := reconcile.ReadVisibleSession(ctx, reader, file.SessionID)
 	if err != nil {
 		return false, 0, fmt.Errorf("read local checkpoint inventory: %w", err)
 	}

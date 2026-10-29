@@ -79,3 +79,35 @@ func TestInventoryFailuresAndPartialCoverageNeverBecomeAbsence(t *testing.T) {
 		t.Fatalf("empty: %+v %v", got, err)
 	}
 }
+
+type metadataFixture struct {
+	fixtureReader
+	metadataError error
+}
+
+func (r *metadataFixture) ReadSessionMetadata(_ context.Context, _ id.CheckpointID, index int) (*cp.Metadata, error) {
+	if r.metadataError != nil {
+		return nil, r.metadataError
+	}
+	session := "unrelated"
+	if index == 1 {
+		session = "recovered"
+	}
+	return &cp.Metadata{SessionID: session, Agent: "Codex"}, nil
+}
+
+func TestSelectedSessionInventorySkipsUnrelatedBodiesAndFailsOnMetadataError(t *testing.T) {
+	reader := &metadataFixture{}
+	records, err := ReadVisibleSession(context.Background(), reader, "recovered")
+	if err != nil || len(records) != 1 || len(reader.reads) != 1 || reader.reads[0] != 1 {
+		t.Fatalf("selected inventory hydrated unrelated bodies: %v, reads %v", err, reader.reads)
+	}
+	reader.metadataError = errors.New("unreadable metadata")
+	if records, err := ReadVisibleSession(context.Background(), reader, "recovered"); err == nil || records != nil {
+		t.Fatal("metadata failure returned a partial inventory")
+	}
+	streamed := &fixtureReader{}
+	if records, err := ReadVisibleSession(context.Background(), streamed, "recovered"); err != nil || len(records) != 1 {
+		t.Fatalf("fallback retained unrelated records: %v", err)
+	}
+}
