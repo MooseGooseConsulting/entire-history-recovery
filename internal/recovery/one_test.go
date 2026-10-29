@@ -127,6 +127,73 @@ func TestImportRequiresExplicitDisplayAnchor(t *testing.T) {
 	}
 }
 
+func TestImportedCheckpointSurvivesIsolatedGitRemoteAndFreshClone(t *testing.T) {
+	for _, backend := range []string{"git-branch", "git-refs"} {
+		t.Run(backend, func(t *testing.T) { testCheckpointRemote(t, backend) })
+	}
+}
+
+func testCheckpointRemote(t *testing.T, backend string) {
+	t.Setenv("ENTIRE_CHECKPOINTS_PRIMARY", backend)
+	base := t.TempDir()
+	remote := filepath.Join(base, "remote.git")
+	work := filepath.Join(base, "work")
+	clone := filepath.Join(base, "clone")
+	run := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_AUTHOR_NAME=Fixture", "GIT_AUTHOR_EMAIL=fixture@example.invalid", "GIT_COMMITTER_NAME=Fixture", "GIT_COMMITTER_EMAIL=fixture@example.invalid")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	run(base, "init", "--quiet", "--bare", remote)
+	run(base, "clone", "--quiet", remote, work)
+	run(work, "commit", "--quiet", "--allow-empty", "-m", "fixture")
+	run(work, "push", "--quiet", "origin", "HEAD")
+	source := filepath.Join(base, "session.jsonl")
+	contents := `{"timestamp":"2020-01-01T00:00:00Z","type":"session_meta","payload":{"id":"remote-fixture-123","cwd":"/missing/old"}}
+{"timestamp":"2020-01-01T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fixture prompt"}]}}
+`
+	if err := os.WriteFile(source, []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := ImportCodex(context.Background(), work, source, destinationHead(t, work), false)
+	if err != nil || result.TurnsImported != 1 {
+		t.Fatalf("import: %+v: %v", result, err)
+	}
+	// Explicit pushes here exercise only isolated Git transport, not Entire's
+	// production sync, queue, remote discovery, or server verification.
+	if backend == "git-branch" {
+		run(work, "push", "--quiet", "origin", "refs/heads/entire/checkpoints/v1:refs/heads/entire/checkpoints/v1")
+	} else {
+		run(work, "push", "--quiet", "origin", "refs/entire/checkpoints/*:refs/entire/checkpoints/*")
+	}
+	run(base, "clone", "--quiet", remote, clone)
+	if backend == "git-refs" {
+		run(clone, "fetch", "--quiet", "origin", "+refs/entire/checkpoints/*:refs/entire/checkpoints/*")
+	}
+	repo, err := git.PlainOpen(clone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	ctx := settings.WithWorktreeRoot(context.Background(), clone)
+	stores, err := checkpoint.Open(ctx, repo, checkpoint.OpenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := stores.Persistent.List(ctx)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("fresh clone checkpoint list: %d, %v", len(items), err)
+	}
+	data, err := stores.Persistent.ReadSessionContent(ctx, items[0].CheckpointID, 0)
+	if err != nil || data.Metadata.SessionID != "remote-fixture-123" || !strings.Contains(string(data.Transcript), "fixture prompt") {
+		t.Fatal("fresh clone did not read imported session")
+	}
+}
+
 // TestPrivateHistoricalSession is an explicit local-only probe; no transcript
 // content is printed or committed, and the temporary repository is removed by
 // the test runner. A server-side round trip requires a separate test.
