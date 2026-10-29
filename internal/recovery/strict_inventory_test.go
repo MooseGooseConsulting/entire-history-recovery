@@ -11,10 +11,30 @@ import (
 	"github.com/MooseGooseConsulting/entire-history-recovery/internal/reconcile"
 	"github.com/entireio/cli/cmd/entire/cli/agentimport"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
+	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/redact"
 	git "github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/filemode"
+	"github.com/go-git/go-git/v6/plumbing/object"
 )
+
+func TestStrictBranchRejectsUnknownRootLayout(t *testing.T) {
+	for _, entry := range []object.TreeEntry{
+		{Name: "unexpected-layout", Mode: filemode.Dir},
+		{Name: "ab", Mode: filemode.Regular},
+	} {
+		tree := &object.Tree{Entries: []object.TreeEntry{entry}}
+		if err := walkStrictBranch(context.Background(), nil, tree, nil, map[id.CheckpointID]plumbing.Hash{}); err == nil {
+			t.Fatal("unrecognized checkpoint layout was treated as complete")
+		}
+	}
+	tree := &object.Tree{Entries: []object.TreeEntry{{Name: "README.md", Mode: filemode.Regular}}}
+	if err := walkStrictBranch(context.Background(), nil, tree, nil, map[id.CheckpointID]plumbing.Hash{}); err != nil {
+		t.Fatalf("known housekeeping file rejected: %v", err)
+	}
+}
 
 func runStrictGit(t *testing.T, dir string, args ...string) []byte {
 	t.Helper()

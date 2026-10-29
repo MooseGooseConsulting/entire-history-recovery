@@ -4,4 +4,6 @@ Research and tools for recovering agent session history into Entire, associating
 
 Start with the [project goals](GOALS.md) and the authoritative [implementation and rollout plan](docs/plans/history-recovery.md), then consult the [field and ingestion catalog](docs/entire-field-catalog.md) for checkpoint fields, sources, and integration boundaries. The plan covers missing original checkouts, existing Entire records, deduplication, review gates and the conditions for bulk ingestion.
 
+The dated [live import acceptance record](docs/live-import-acceptance.md) describes what has been verified and when those checks must be repeated.
+
 This public repository is for source code, synthetic fixtures, and sanitized documentation. Keep private transcripts, credentials, inventories, and recovery manifests outside it.
