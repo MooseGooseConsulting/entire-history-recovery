@@ -322,6 +322,14 @@ func TestPrivateCodexCohortProcessIsolated(t *testing.T) {
 		t.Fatalf("cohort size outside 10-20: %d", count)
 	}
 	root := t.TempDir()
+	globalConfig := filepath.Join(root, "empty.gitconfig")
+	if err := os.WriteFile(globalConfig, nil, 0600); err != nil {
+		t.Fatal("create empty global Git config")
+	}
+	hooksPath := filepath.Join(root, "empty-hooks")
+	if err := os.Mkdir(hooksPath, 0700); err != nil {
+		t.Fatal("create empty Git hooks directory")
+	}
 	privateManifest := filepath.Join(root, "sources.manifest")
 	manifestBytes := []byte(normalized.String())
 	if err := os.WriteFile(privateManifest, manifestBytes, 0400); err != nil {
@@ -331,7 +339,15 @@ func TestPrivateCodexCohortProcessIsolated(t *testing.T) {
 	manifestDigest := hex.EncodeToString(manifestHash[:])
 	for _, mode := range []string{"initial", "retry"} {
 		cmd := exec.Command(os.Args[0], "-test.run=^TestPrivateCodexCohortProcessIsolated$", "-test.v")
-		cmd.Env = append(os.Environ(), "RECOVERY_COHORT_CHILD=1", "RECOVERY_TEST_CODEX_MANIFEST="+privateManifest, "RECOVERY_COHORT_MANIFEST_SHA256="+manifestDigest, "RECOVERY_COHORT_DEST="+root, "RECOVERY_COHORT_MODE="+mode)
+		cmd.Env = replaceEnv(os.Environ(), map[string]string{
+			"RECOVERY_COHORT_CHILD":           "1",
+			"RECOVERY_TEST_CODEX_MANIFEST":    privateManifest,
+			"RECOVERY_COHORT_MANIFEST_SHA256": manifestDigest,
+			"RECOVERY_COHORT_DEST":            root,
+			"RECOVERY_COHORT_MODE":            mode,
+			"RECOVERY_TEST_EMPTY_GIT_CONFIG":  globalConfig,
+			"RECOVERY_TEST_EMPTY_GIT_HOOKS":   hooksPath,
+		})
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("private cohort %s process failed: %v: %s", mode, err, out)
 		} else {
@@ -364,13 +380,8 @@ func runPrivateCohortChild(t *testing.T, manifest, expectedManifestDigest, root,
 		if err := os.MkdirAll(root, 0700); err != nil {
 			t.Fatal("create private destination")
 		}
-		for _, args := range [][]string{{"init", "--quiet"}, {"-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "--allow-empty", "-m", "private cohort destination"}} {
-			cmd := exec.Command("git", args...)
-			cmd.Dir = root
-			if out, err := cmd.CombinedOutput(); err != nil {
-				t.Fatalf("prepare destination: %v: %s", err, out)
-			}
-		}
+		runHermeticGitFixture(t, root, "init", "--quiet")
+		runHermeticGitFixture(t, root, "commit", "--quiet", "--allow-empty", "-m", "private cohort destination")
 	}
 	anchor := destinationHead(t, root)
 	total, models := 0, 0
