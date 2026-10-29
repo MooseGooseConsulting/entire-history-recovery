@@ -43,9 +43,14 @@ must be a full hexadecimal SHA resolving to an existing commit in that checkout;
 branches, abbreviations, missing objects and non-commit objects are rejected in
 both preview and write. It is a display commit, not evidence that the session authored it. Snapshot digest
 verification is carried through the importer's reads, including its later reread.
-Preview, write and retry use separate command invocations on Windows so the
-process boundary releases repository handles. In-process Windows suite cleanup
-remains an open limitation.
+Each `import` command runs its storage assessment and import in a child process.
+The parent creates a private inventory workspace beside the sealed snapshot,
+waits for the worker to exit, then removes that exact workspace. It prints the
+worker result only after cleanup succeeds; cleanup failures are reported as
+command failures. This process boundary releases temporary repository handles
+on Windows. Direct library calls do not get this process-isolated cleanup and
+may still encounter open-handle failures on Windows, even after repository
+close; the CLI is the verified boundary for this path.
 
 Review order: `internal/snapshot/seal.go` and platform directory checks, then
 `ImportCodexVerified` in `internal/recovery/one.go`, then the command. The helper
