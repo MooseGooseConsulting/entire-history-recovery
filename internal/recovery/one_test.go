@@ -201,7 +201,7 @@ func TestImportOldCodexSessionIntoDifferentRepository(t *testing.T) {
 	if err := os.WriteFile(source, []byte(contents), 0600); err != nil {
 		t.Fatal(err)
 	}
-	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	old := time.Date(2021, 2, 3, 4, 5, 6, 0, time.UTC)
 	if err := os.Chtimes(source, old, old); err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestImportOldCodexSessionIntoDifferentRepository(t *testing.T) {
 	if data.Metadata.Kind != "imported" || data.Metadata.CommitSHA == "" {
 		t.Fatal("import kind or display anchor missing")
 	}
-	if data.Metadata.CreatedAt.Year() != 2020 || data.Metadata.CheckpointTranscriptStart != 2 {
+	if !data.Metadata.CreatedAt.Equal(time.Date(2020, 1, 1, 0, 0, 1, 0, time.UTC)) || data.Metadata.CheckpointTranscriptStart != 2 {
 		t.Fatalf("time or offset: %+v", data.Metadata)
 	}
 	if data.Metadata.Model != "fixture-model" {
