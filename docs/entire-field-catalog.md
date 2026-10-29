@@ -100,7 +100,7 @@ These are `CheckpointSummary` fields, distinct from the per-session fields. Aggr
 
 ## How to integrate
 
-**First implementation:** prototype a standalone wrapper around Entire's exported importer interfaces, reusing its parsers, redaction, deterministic IDs, checkpoint writer and sync behavior. Test historical path mappings and date handling. Consider a pinned fork or patch only if the wrapper cannot safely reach a necessary boundary. Use the stock command for sessions it already selects correctly. Add formats only after native fixtures and round-trip tests prove them. Keep originals read-only.
+**First implementation:** prototype a standalone wrapper around Entire's exported importer interfaces, reusing its parsers, redaction, deterministic IDs and checkpoint writer; implement and verify checkpoint sync separately. Test historical path mappings and date handling. Consider a pinned fork or patch only if the wrapper cannot safely reach a necessary boundary. Use the stock command for sessions it already selects correctly. Add formats only after native fixtures and round-trip tests prove them. Keep originals read-only.
 
 Entire CLI v0.12.2 is MIT-licensed. If code is copied or distributed, retain the upstream license and copyright notice and track the pinned upstream revision; confirm the licenses of any additional components independently.
 
