@@ -44,3 +44,19 @@ explained the discrepancy. The cause remains unresolved; Git presence alone
 must not count as successful server ingestion. Raw responses, IDs and repository
 inventory remain in private evidence. This observation also does not establish
 that all service-visible checkpoints are represented by those Git refs.
+
+## Repository-list endpoint
+
+Further live investigation found an authenticated `GET /api/v1/repos/{repo_id}/checkpoints`
+endpoint. For one private repository with no Git checkpoint refs, it returned
+an empty database-backed array with `history_status: complete` and
+`history_complete: true`. For the earlier repository, the same endpoint returned
+14 records and the same complete status, while 15 of the 21 Git-ref IDs had
+previously been readable through the individual API endpoint. The two calls
+were not an atomic snapshot, so this does not by itself prove a listing bug;
+it does mean the completeness flag alone cannot establish cross-surface coverage.
+
+The advertised schema endpoint returned 404 during this check. Until the listing
+contract, pagination and timing are established against stable before/after
+inventories, treat the endpoint as useful additional evidence rather than a
+standalone guarantee that no session exists. Raw results remain private.
