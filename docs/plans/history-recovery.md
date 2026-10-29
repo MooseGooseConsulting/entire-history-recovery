@@ -12,7 +12,8 @@ User decisions from the October 29 conversation:
 - Missing original checkouts are a required case. A replacement clone is a destination, not a prerequisite for finding a source.
 - Use Windows now, where Entire is authenticated; SER10 remains a useful Linux execution/test host. Neither host's auth failure blocks independent work on the other.
 - Keep tools, synthetic fixtures and sanitized docs in this public repo; real transcripts, manifests and credentials remain private.
-- Deliver stacked PRs, inspect reviews and required checks, and address findings before merging. Do not merge just because a PR was created.
+- Deliver stacked **non-draft** PRs. Delegate bounded implementation tasks to subagents and have an independent trailing reviewer triage automated and subagent findings against the actual code. Fix valid findings, verify the fixes and inspect required checks before merging. Do not merge just because a PR was created.
+- Use a small number of behavior-focused tests over 10-20 actual conversations/sessions. Keep the private cohort fixed and test the externally observable recovery result, including actual write retries; do not inflate coverage with many tests that repeat implementation details.
 - Target the field catalog and review the complete path before bulk writes.
 
 Technical choices for this revision:
@@ -27,7 +28,7 @@ Technical choices for this revision:
 
 ## Verified starting point and known gaps
 
-Code baseline: `5b2a0f6`, Entire Go dependency v0.12.2. Installed Windows CLI previously reported v0.12.1; verify both versions for every compatibility result.
+Initial code baseline: `5b2a0f6`, Entire Go dependency v0.12.2. The implementation stack now also includes existing-coverage assessment, a private cohort test and the sealed-snapshot CLI; these remain open PRs. Installed Windows CLI previously reported v0.12.1; verify both versions for every compatibility result.
 
 | Evidence | What it establishes | What it does not establish |
 | --- | --- | --- |
@@ -37,10 +38,13 @@ Code baseline: `5b2a0f6`, Entire Go dependency v0.12.2. Installed Windows CLI pr
 | Linux suite and race run | Covered local writes, source integrity, IDs, transport to a bare Git remote and fresh-clone readback. | Entire's production sync queue or cloud behavior. |
 | Windows test suite | Functional assertions reached success, but several temporary-directory cleanup operations failed with open-handle errors. | A green Windows suite. Find and fix resource ownership or use a deliberate process-lifetime boundary with a cleanup acceptance test. Do not suppress the failures. |
 | Local authenticated Entire activity | This computer can reach the service. | A recovered checkpoint has arrived there. |
+| Private 12-session cohort | 37 locally written checkpoint records; real second write imports zero and skips 37; readback matches selected identities, stored transcript digests and boundaries. Source hashes and refs remain unchanged on retry. | Correct destination mapping, reconciliation with existing production/live records, or server visibility. |
+| Sealed CLI over the same 12 actual sessions | Snapshot, preview, local write and real write retry succeed as separate Windows processes. Zero leftover staging files; parent can remove the temporary destination after process exit. | A fix for the underlying in-process Windows handle lifetime, or a production batch runner. |
+| Linux at `f50a377` | Full synthetic suite and vet pass, including the snapshot package. | Linux execution of the private Windows cohort; it was not transferred. |
 
 `ImportCodex` currently passes neither `ReadRemotes` nor `RemoteRefLister`. Upstream `agentimport.Run` builds an existing-ID set only if `stores.Persistent.List(...)` succeeds; a list failure otherwise leaves that set empty. Stock imported IDs use native session ID and importer turn key; the Codex turn key is a raw line position. These facts are why the current prototype is not sufficient for production deduplication.
 
-The local `cmd/recover-one` experiment is not yet part of the baseline commit. Preserve it, review it, and promote it in the first implementation slice; do not describe it as a shipped CLI.
+The experimental [`cmd/recover-one` CLI](../snapshot-command.md) is in the open implementation stack. It accepts verified private snapshots and previews by default. Its local write path still does not enforce production mapping, remote/server inventory or semantic reconciliation. The separate `internal/reconcile` reader and exact-coverage assessment have not yet been connected to that write path; zero-write retries are not proof of global duplicate prevention.
 
 ## Recovery without the old checkout
 
@@ -63,7 +67,7 @@ Missing source content remains an explicit recovery limit, but discovery must ch
 
 ### Concrete source and destination contract
 
-Add a snapshot command before apply: read an inactive source or use that source's supported consistent export/backup, copy it into a private temporary file, hash while copying, validate every record, verify original stat/digest stability, then atomically rename the copy into a content-addressed snapshot directory and mark it read-only. An active writer, interrupted copy, changed source, or unvalidated final record yields no sealed snapshot and no import. Reading a changing file twice is not a substitute for a consistent export; if an active source cannot be locked/exported consistently, defer it. Keep original bytes and newline conventions. Apply accepts only a sealed snapshot and verifies its digest again; the current two-read digest check is not this full protocol.
+The snapshot command now reads a source explicitly asserted inactive, copies it into a private temporary file, hashes while copying, validates every record, verifies original stat/digest stability, and atomically publishes a content-addressed read-only file using a no-overwrite hard link. Existing snapshot paths are verified rather than overwritten. Apply verifies the digest and pins it through the importer's reread. `--inactive` is an operator assertion, not process detection or a lock. A changing source detected during intake, interrupted copy or unvalidated record yields no accepted snapshot. Reading a changing file twice is not a substitute for a consistent export; if an active source cannot be locked/exported consistently, defer it. Keep original bytes and newline conventions.
 
 The mapping manifest and preview must name `code_repository_id`, `code_repository_url`, `destination_checkout`, `checkpoint_write_remote`, `checkpoint_write_url`, `checkpoint_read_remotes`, `snapshot_sha256`, `mapping_revision`, `display_anchor_sha`, and `display_anchor_basis`. These are proposed private tool fields, not claims about Entire's persisted schema. Resolve inherited settings and remote election, compare their result with the manifest, and reject disagreement or ambiguity before writing. Display both repository visibility and checkpoint-storage visibility; allow a different storage repository only when that exact destination is configured and authorized for this code repository. Put these resolved values in the operation receipt.
 

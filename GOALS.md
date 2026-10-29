@@ -22,4 +22,4 @@ Make historical agent work useful in Entire: ingest genuine recovered sessions i
 - A dispatch accounts for actual landed changes, even where no session record exists.
 - Source transcripts, private mappings, credentials, and inventories remain outside this public repository. The checkpoint destination and exposure of imported data are checked before each real batch.
 
-Each PR has a concrete verification result. Wait for the applicable reviews, inspect and address their findings, then merge. A successful synthetic test proves feasibility, not fleet-wide recovery.
+Each PR is non-draft and has a concrete verification result. Use bounded implementation subagents and an independent reviewer trailing the stack to triage findings and confirm fixes. Keep a couple of behavior-focused acceptance paths over 10-20 actual conversations/sessions, with private data outside the repository. Wait for the applicable reviews, inspect and address their findings, then merge. A successful synthetic test proves feasibility, not fleet-wide recovery.
