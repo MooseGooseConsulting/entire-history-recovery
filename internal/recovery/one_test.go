@@ -243,3 +243,23 @@ func TestSingleTurnModelBeforePrompt(t *testing.T) {
 		t.Fatalf("single-turn model not preserved")
 	}
 }
+
+func TestHeaderWithoutNewline(t *testing.T) {
+	root := t.TempDir()
+	for _, args := range [][]string{{"init", "--quiet"}, {"commit", "--quiet", "--allow-empty", "-m", "fixture"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_AUTHOR_NAME=Fixture", "GIT_AUTHOR_EMAIL=fixture@example.invalid", "GIT_COMMITTER_NAME=Fixture", "GIT_COMMITTER_EMAIL=fixture@example.invalid")
+		if _, err := cmd.CombinedOutput(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	source := filepath.Join(t.TempDir(), "header.jsonl")
+	if err := os.WriteFile(source, []byte(`{"type":"session_meta","payload":{"id":"valid-header"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := ImportCodex(context.Background(), root, source, true)
+	if err != nil || result.SessionsScanned != 1 || result.TurnsImported != 0 {
+		t.Fatalf("header-only preview: %+v, %v", result, err)
+	}
+}

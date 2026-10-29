@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -84,7 +85,7 @@ func ImportCodex(ctx context.Context, repoRoot, source string, dryRun bool) (age
 	defer f.Close()
 	reader := bufio.NewReader(f)
 	line, err := reader.ReadBytes('\n')
-	if err != nil {
+	if err != nil && !(errors.Is(err, io.EOF) && len(line) > 0) {
 		return result, fmt.Errorf("read Codex session metadata: %w", err)
 	}
 	var header struct {
