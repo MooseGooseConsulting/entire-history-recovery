@@ -47,6 +47,12 @@ func TestHydrateAllSessionsAndRecognizeLiveCoverage(t *testing.T) {
 	if err != nil || got.Status != "present" || got.Covered != 1 {
 		t.Fatalf("live coverage: %+v %v", got, err)
 	}
+	otherTurn := records[1]
+	otherTurn.Content.Metadata.CheckpointTranscriptStart = 2
+	got, err = AssessExact(candidate, append(records, otherTurn))
+	if err != nil || got.Status != "present" || got.Covered != 1 {
+		t.Fatalf("additional existing turn blocked covered candidate: %+v %v", got, err)
+	}
 	candidate.Transcript = []byte("header\nprompt\nanswer\nnew prompt\n")
 	candidate.Starts = []int{1, 3}
 	got, err = AssessExact(candidate, records)

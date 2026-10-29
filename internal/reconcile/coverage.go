@@ -117,7 +117,7 @@ func AssessExact(candidate Candidate, records []Record) (Assessment, error) {
 		}
 		if starts[meta.CheckpointTranscriptStart] {
 			covered[meta.CheckpointTranscriptStart] = true
-		} else {
+		} else if meta.CheckpointTranscriptStart < 0 || meta.CheckpointTranscriptStart >= lineCount {
 			conflict = true
 		}
 	}
