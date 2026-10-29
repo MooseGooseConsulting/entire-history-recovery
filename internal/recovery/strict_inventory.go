@@ -38,10 +38,12 @@ type StorageAssessment struct {
 
 type inventoryWorkspaceContextKey struct{}
 
-// WithInventoryWorkspace places temporary bare repositories beneath workspace
-// and transfers their cleanup ownership to the caller. The CLI uses this only
-// inside a worker subprocess; its parent removes the owned workspace after the
-// child exits and releases all handles.
+// WithInventoryWorkspace validates a private directory and places temporary
+// bare repositories beneath it. Remote inventory requires this context; it
+// fails closed rather than using the shared system temp directory. The caller
+// owns cleanup after every repository handle beneath the workspace is closed.
+// The CLI supplies it to a worker subprocess so its parent can clean up after
+// the child exits and releases all handles.
 func WithInventoryWorkspace(ctx context.Context, workspace string) (context.Context, error) {
 	if workspace == "" {
 		return nil, errors.New("inventory workspace is required")
@@ -71,7 +73,8 @@ func inventoryWorkspaceFromContext(ctx context.Context) (string, bool) {
 // AssessCodexStorage enumerates both Entire Git storage layouts directly,
 // failing on malformed or unreadable entries. It queries every configured
 // checkpoint read target strictly and hydrates transcript bodies only for
-// sessions whose ID matches candidate.SessionID.
+// sessions whose ID matches candidate.SessionID. Configured Git read targets
+// require a private caller-owned workspace attached with WithInventoryWorkspace.
 func AssessCodexStorage(ctx context.Context, repoRoot string, repo *git.Repository, candidate reconcile.Candidate) (StorageAssessment, error) {
 	result := StorageAssessment{}
 	root, err := filepath.Abs(repoRoot)
@@ -100,12 +103,8 @@ func AssessCodexStorage(ctx context.Context, repoRoot string, repo *git.Reposito
 			}
 			remoteData, readErr := readStrictRepository(ctx, remoteRoot, remoteRepo, nil, candidate)
 			closeErr := remoteRepo.Close()
-			var removeErr error
-			if _, parentOwnsCleanup := inventoryWorkspaceFromContext(ctx); !parentOwnsCleanup {
-				removeErr = os.RemoveAll(remoteRoot)
-			}
-			if readErr != nil || closeErr != nil || removeErr != nil {
-				return result, fmt.Errorf("read configured checkpoint target %d: %w", i+1, errors.Join(readErr, closeErr, removeErr))
+			if readErr != nil || closeErr != nil {
+				return result, fmt.Errorf("read configured checkpoint target %d: %w", i+1, errors.Join(readErr, closeErr))
 			}
 			result.CheckpointTrees += remoteData.count
 			records = append(records, remoteData.records...)
@@ -354,6 +353,13 @@ func configuredTargets(ctx context.Context, root string) ([]string, error) {
 }
 
 func fetchRemoteInventory(ctx context.Context, worktreeRoot, target string) (string, *git.Repository, error) {
+	workspace, ok := inventoryWorkspaceFromContext(ctx)
+	if !ok {
+		// Never fall back to os.TempDir: on Windows its inherited ACL may expose
+		// fetched checkpoint objects to other users. The caller that created the
+		// private workspace owns cleanup after all repository handles are closed.
+		return "", nil, errors.New("configured checkpoint inventory requires a private workspace")
+	}
 	ctx, cancel := context.WithTimeout(ctx, configuredInventoryTimeout)
 	defer cancel()
 	listing, err := remotegit.LsRemoteInDir(ctx, worktreeRoot, target, cp.CheckpointRefPrefix+"*", "refs/heads/"+paths.MetadataBranchName)
@@ -364,25 +370,18 @@ func fetchRemoteInventory(ctx context.Context, worktreeRoot, target string) (str
 	if err != nil {
 		return "", nil, err
 	}
-	workspace, parentOwnsCleanup := inventoryWorkspaceFromContext(ctx)
 	temp, err := os.MkdirTemp(workspace, "entire-import-inventory-")
 	if err != nil {
 		return "", nil, err
 	}
 	repo, err := git.PlainInit(temp, true)
 	if err != nil {
-		if !parentOwnsCleanup {
-			_ = os.RemoveAll(temp)
-		}
 		return "", nil, err
 	}
 	if len(refspecs) > 0 {
 		_, err = remotegit.Fetch(ctx, remotegit.FetchOptions{Remote: target, RefSpecs: refspecs, NoTags: true, NoFilter: true, Dir: temp, ExtraArgs: []string{"--no-write-fetch-head"}})
 		if err != nil {
 			_ = repo.Close()
-			if !parentOwnsCleanup {
-				_ = os.RemoveAll(temp)
-			}
 			return "", nil, errors.New("configured checkpoint objects could not be fetched")
 		}
 		fetched := make(map[string]bool, len(refspecs))
@@ -398,9 +397,6 @@ func fetchRemoteInventory(ctx context.Context, worktreeRoot, target string) (str
 			ref, err := repo.Reference(plumbing.ReferenceName(fields[1]), true)
 			if err != nil || ref.Hash().String() != fields[0] {
 				_ = repo.Close()
-				if !parentOwnsCleanup {
-					_ = os.RemoveAll(temp)
-				}
 				return "", nil, errors.New("checkpoint refs changed during strict inventory")
 			}
 		}

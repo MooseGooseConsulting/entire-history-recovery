@@ -80,6 +80,19 @@ func useStrictInventoryTemp(t *testing.T) string {
 	return base
 }
 
+func withTestInventoryWorkspace(t *testing.T, ctx context.Context) context.Context {
+	t.Helper()
+	workspace := filepath.Join(t.TempDir(), "private-inventory")
+	if err := snapshot.EnsurePrivateDir(workspace); err != nil {
+		t.Fatal(err)
+	}
+	ctx, err := WithInventoryWorkspace(ctx, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ctx
+}
+
 func assertNoStrictInventoryTemp(t *testing.T, base string) {
 	t.Helper()
 	entries, err := os.ReadDir(base)
@@ -137,7 +150,7 @@ func TestStrictConfiguredRemoteFindsRemoteOnlyCheckpointAndRetryIsNoop(t *testin
 			configureCheckpointBackend(t, writer, backend)
 			source := writeStrictCodexSource(t)
 			anchor := destinationHead(t, writer)
-			imported, err := ImportCodex(context.Background(), writer, source, anchor, false)
+			imported, err := ImportCodex(withTestInventoryWorkspace(t, context.Background()), writer, source, anchor, false)
 			if err != nil || imported.TurnsImported != 1 {
 				t.Fatalf("writer import: %+v %v", imported, err)
 			}
@@ -170,7 +183,8 @@ func TestStrictConfiguredRemoteFindsRemoteOnlyCheckpointAndRetryIsNoop(t *testin
 			for _, turn := range turns {
 				starts = append(starts, turn.LineStart)
 			}
-			proof, err := AssessCodexStorage(settings.WithWorktreeRoot(context.Background(), reader), reader, readerRepo, reconcile.Candidate{
+			proofCtx := withTestInventoryWorkspace(t, settings.WithWorktreeRoot(context.Background(), reader))
+			proof, err := AssessCodexStorage(proofCtx, reader, readerRepo, reconcile.Candidate{
 				SessionID: "remote-only-session", Agent: string(adapter.AgentType()), Transcript: transcript.Bytes(), Starts: starts,
 			})
 			_ = readerRepo.Close()
@@ -182,7 +196,7 @@ func TestStrictConfiguredRemoteFindsRemoteOnlyCheckpointAndRetryIsNoop(t *testin
 			runStrictGit(t, filepath.Dir(retry), "clone", "--quiet", "--single-branch", "--branch", "main", bare, retry)
 			configureCheckpointBackend(t, retry, backend)
 			before := runStrictGit(t, retry, "for-each-ref", "--format=%(refname) %(objectname)")
-			retried, err := ImportCodex(context.Background(), retry, source, destinationHead(t, retry), false)
+			retried, err := ImportCodex(withTestInventoryWorkspace(t, context.Background()), retry, source, destinationHead(t, retry), false)
 			if err != nil || retried.TurnsImported != 0 || retried.TurnsSkipped != 1 {
 				t.Fatalf("remote-only retry: %+v %v", retried, err)
 			}
@@ -299,7 +313,8 @@ func TestStrictDedicatedCheckpointRemoteFindsRemoteOnlyCheckpoint(t *testing.T) 
 			for _, turn := range turns {
 				starts = append(starts, turn.LineStart)
 			}
-			proof, err := AssessCodexStorage(context.Background(), reader, readerRepo, reconcile.Candidate{
+			proofCtx := withTestInventoryWorkspace(t, context.Background())
+			proof, err := AssessCodexStorage(proofCtx, reader, readerRepo, reconcile.Candidate{
 				SessionID: "remote-only-session", Agent: string(adapter.AgentType()), Transcript: transcript.Bytes(), Starts: starts,
 			})
 			_ = readerRepo.Close()
@@ -311,16 +326,29 @@ func TestStrictDedicatedCheckpointRemoteFindsRemoteOnlyCheckpoint(t *testing.T) 
 	}
 }
 
-func TestStrictRemoteInventoryListingFailureCreatesNoTempRepository(t *testing.T) {
+func TestStrictRemoteInventoryRequiresPrivateWorkspace(t *testing.T) {
 	tempBase := useStrictInventoryTemp(t)
 	_, repo, err := fetchRemoteInventory(context.Background(), t.TempDir(), filepath.Join(t.TempDir(), "missing.git"))
+	if err == nil || err.Error() != "configured checkpoint inventory requires a private workspace" || repo != nil {
+		if repo != nil {
+			_ = repo.Close()
+		}
+		t.Fatalf("inventory without a private workspace was not rejected safely: %v", err)
+	}
+	assertNoStrictInventoryTemp(t, tempBase)
+}
+
+func TestStrictRemoteInventoryListingFailureCreatesNoRepository(t *testing.T) {
+	ctx := withTestInventoryWorkspace(t, context.Background())
+	workspace, _ := inventoryWorkspaceFromContext(ctx)
+	_, repo, err := fetchRemoteInventory(ctx, t.TempDir(), filepath.Join(t.TempDir(), "missing.git"))
 	if err == nil || repo != nil {
 		if repo != nil {
 			_ = repo.Close()
 		}
 		t.Fatal("unreachable configured target unexpectedly opened")
 	}
-	assertNoStrictInventoryTemp(t, tempBase)
+	assertNoStrictInventoryTemp(t, workspace)
 }
 
 func codexImporter(t *testing.T) agentimport.Importer {
