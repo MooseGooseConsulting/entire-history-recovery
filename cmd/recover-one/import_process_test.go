@@ -114,6 +114,16 @@ func TestImportSubprocessCleansInventoryWorkspace(t *testing.T) {
 	}
 }
 
+func TestRedactInventoryPathRemovesPrivatePathsFromCleanupErrors(t *testing.T) {
+	privateParent := filepath.Join("C:", "Users", "test", "private snapshots")
+	workspace := filepath.Join(privateParent, ".entire-import-inventory-test")
+	message := "remove " + workspace + " under " + privateParent + ": access denied"
+	redacted := redactInventoryPath(message, privateParent, workspace)
+	if strings.Contains(redacted, privateParent) || strings.Contains(redacted, workspace) {
+		t.Fatalf("private path leaked in cleanup error: %s", redacted)
+	}
+}
+
 func initGitRepo(t *testing.T, repo string) string {
 	t.Helper()
 	if err := os.Mkdir(repo, 0700); err != nil {

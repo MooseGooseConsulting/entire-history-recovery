@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/MooseGooseConsulting/entire-history-recovery/internal/reconcile"
+	"github.com/MooseGooseConsulting/entire-history-recovery/internal/snapshot"
 	"github.com/entireio/cli/cmd/entire/cli/agentimport"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
@@ -33,6 +34,25 @@ func TestStrictBranchRejectsUnknownRootLayout(t *testing.T) {
 	tree := &object.Tree{Entries: []object.TreeEntry{{Name: "README.md", Mode: filemode.Regular}}}
 	if err := walkStrictBranch(context.Background(), nil, tree, nil, map[id.CheckpointID]plumbing.Hash{}); err != nil {
 		t.Fatalf("known housekeeping file rejected: %v", err)
+	}
+}
+
+func TestWithInventoryWorkspaceRequiresPrivateDirectory(t *testing.T) {
+	parent := t.TempDir()
+	private := filepath.Join(parent, "private")
+	if err := snapshot.EnsurePrivateDir(private); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WithInventoryWorkspace(context.Background(), private); err != nil {
+		t.Fatalf("private workspace rejected: %v", err)
+	}
+
+	shared := filepath.Join(parent, "shared")
+	if err := os.Mkdir(shared, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WithInventoryWorkspace(context.Background(), shared); err == nil || err.Error() != "inventory workspace must be private" {
+		t.Fatalf("shared workspace was not rejected with a safe error: %v", err)
 	}
 }
 

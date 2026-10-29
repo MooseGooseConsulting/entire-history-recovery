@@ -144,7 +144,7 @@ func runImportWorker(ctx context.Context, privateParent string, args []string) (
 		cleanupErr := removeOwnedInventoryWorkspace(workspace, privateParent)
 		if cleanupErr != nil {
 			stdout = nil
-			runErr = errors.Join(runErr, fmt.Errorf("clean private inventory workspace: %w", cleanupErr))
+			runErr = errors.Join(runErr, fmt.Errorf("clean private inventory workspace: %s", redactInventoryPath(cleanupErr.Error(), privateParent, workspace)))
 		}
 	}()
 
@@ -164,6 +164,11 @@ func runImportWorker(ctx context.Context, privateParent string, args []string) (
 		return nil, stderr, fmt.Errorf("import worker failed: %w", err)
 	}
 	return stdout, stderr, nil
+}
+
+func redactInventoryPath(message, privateParent, workspace string) string {
+	message = strings.ReplaceAll(message, privateParent, "<private snapshot directory>")
+	return strings.ReplaceAll(message, workspace, "<private inventory workspace>")
 }
 
 func withInternalInventoryEnv(env []string, workspace string) []string {
