@@ -486,7 +486,10 @@ func TestPrivateCodexCohortProcessIsolated(t *testing.T) {
 	}
 	privateManifest := filepath.Join(root, "sources.manifest")
 	manifestBytes := []byte(normalized.String())
-	if err := os.WriteFile(privateManifest, manifestBytes, 0400); err != nil {
+	// Keep the file writable so Windows can remove the containing temporary
+	// directory after both child processes exit. The child verifies the pinned
+	// digest before reading it, which detects accidental manifest changes.
+	if err := os.WriteFile(privateManifest, manifestBytes, 0600); err != nil {
 		t.Fatal("seal normalized private manifest")
 	}
 	manifestHash := sha256.Sum256(manifestBytes)
