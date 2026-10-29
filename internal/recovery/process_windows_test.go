@@ -46,7 +46,7 @@ func TestWindowsImportProcessReleasesRepository(t *testing.T) {
 		return
 	}
 
-	base := t.TempDir()
+	base := testTempDir(t)
 	globalConfig := filepath.Join(base, "empty.gitconfig")
 	if err := os.WriteFile(globalConfig, nil, 0600); err != nil {
 		t.Fatal("create empty global Git config")

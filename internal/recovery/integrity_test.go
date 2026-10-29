@@ -17,7 +17,7 @@ import (
 
 func integrityRepo(t *testing.T) string {
 	t.Helper()
-	root := t.TempDir()
+	root := testTempDir(t)
 	for _, args := range [][]string{{"init", "--quiet"}, {"-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "--allow-empty", "-m", "fixture"}} {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = root
@@ -43,7 +43,7 @@ func TestAppendOnlyRecoveryIsHeldWhenTranscriptChanges(t *testing.T) {
 		t.Run(backend, func(t *testing.T) {
 			t.Setenv("ENTIRE_CHECKPOINTS_PRIMARY", backend)
 			root := integrityRepo(t)
-			source := filepath.Join(t.TempDir(), "session.jsonl")
+			source := filepath.Join(testTempDir(t), "session.jsonl")
 			original := integrityHeader + integrityPrompt
 			if err := os.WriteFile(source, []byte(original), 0600); err != nil {
 				t.Fatal(err)
@@ -94,7 +94,7 @@ func TestChangingCheckpointBackendDoesNotDuplicateSession(t *testing.T) {
 		t.Run(initial, func(t *testing.T) {
 			t.Setenv("ENTIRE_CHECKPOINTS_PRIMARY", initial)
 			root := integrityRepo(t)
-			source := filepath.Join(t.TempDir(), "session.jsonl")
+			source := filepath.Join(testTempDir(t), "session.jsonl")
 			if err := os.WriteFile(source, []byte(integrityHeader+integrityPrompt), 0600); err != nil {
 				t.Fatal(err)
 			}
@@ -130,7 +130,7 @@ func TestDamagedSessionRejectedBeforeAnyCheckpointWrite(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			root := integrityRepo(t)
-			source := filepath.Join(t.TempDir(), "session.jsonl")
+			source := filepath.Join(testTempDir(t), "session.jsonl")
 			content := integrityHeader + integrityPrompt + damage
 			if err := os.WriteFile(source, []byte(content), 0600); err != nil {
 				t.Fatal(err)
@@ -160,7 +160,7 @@ func TestDamagedSessionRejectedBeforeAnyCheckpointWrite(t *testing.T) {
 
 func TestDryRunDoesNotCreateCheckpointRefs(t *testing.T) {
 	root := integrityRepo(t)
-	source := filepath.Join(t.TempDir(), "session.jsonl")
+	source := filepath.Join(testTempDir(t), "session.jsonl")
 	if err := os.WriteFile(source, []byte(integrityHeader+integrityPrompt), 0600); err != nil {
 		t.Fatal(err)
 	}

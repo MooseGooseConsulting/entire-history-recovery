@@ -75,7 +75,7 @@ func syntheticCodexSource(t *testing.T, root string) (string, string) {
 {"timestamp":"2020-01-01T00:00:02Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"fixture answer"}]}}
 {"timestamp":"2020-01-01T00:00:03Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"fixture-turn"}}
 `
-	source := filepath.Join(t.TempDir(), "source.jsonl")
+	source := filepath.Join(testTempDir(t), "source.jsonl")
 	if err := os.WriteFile(source, []byte(contents), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func syntheticCodexSource(t *testing.T, root string) (string, string) {
 }
 
 func TestImportSkipsExactCoverageUnderDifferentCheckpointID(t *testing.T) {
-	root := t.TempDir()
+	root := testTempDir(t)
 	source, anchor := syntheticCodexSource(t, root)
 	full, err := os.ReadFile(source)
 	if err != nil {
@@ -124,7 +124,7 @@ func TestImportHoldsDamagedOrPartialCoverageWithoutWriting(t *testing.T) {
 		damaged bool
 	}{{"damaged inventory", true}, {"partial conflicting coverage", false}} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
+			root := testTempDir(t)
 			source, anchor := syntheticCodexSource(t, root)
 			full, err := os.ReadFile(source)
 			if err != nil {
@@ -176,7 +176,7 @@ func assertNoCheckpointWrites(t *testing.T, root string) {
 }
 
 func TestImportOldCodexSessionIntoDifferentRepository(t *testing.T) {
-	root := t.TempDir()
+	root := testTempDir(t)
 	run := func(args ...string) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
@@ -188,7 +188,7 @@ func TestImportOldCodexSessionIntoDifferentRepository(t *testing.T) {
 	}
 	run("init", "--quiet")
 	run("commit", "--quiet", "--allow-empty", "-m", "fixture")
-	source := filepath.Join(t.TempDir(), "old.jsonl")
+	source := filepath.Join(testTempDir(t), "old.jsonl")
 	contents := `{"timestamp":"2020-01-01T00:00:00Z","type":"session_meta","payload":{"id":"session-fixture-123","cwd":"/deleted/checkout"}}
 {"timestamp":"2020-01-01T00:00:00Z","type":"event_msg","payload":{"type":"task_started","turn_id":"fixture-turn"}}
 {"timestamp":"2020-01-01T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fixture question"}]}}
@@ -269,14 +269,14 @@ func TestImportOldCodexSessionIntoDifferentRepository(t *testing.T) {
 }
 
 func TestImportRequiresExplicitDisplayAnchor(t *testing.T) {
-	if _, err := ImportCodex(context.Background(), t.TempDir(), "unused", "", true); err == nil {
+	if _, err := ImportCodex(context.Background(), testTempDir(t), "unused", "", true); err == nil {
 		t.Fatal("missing anchor accepted")
 	}
 }
 
 func TestVerifiedImportRejectsWrongSnapshotHashBeforeCheckpointWrite(t *testing.T) {
-	root := t.TempDir()
-	source := filepath.Join(t.TempDir(), "source.jsonl")
+	root := testTempDir(t)
+	source := filepath.Join(testTempDir(t), "source.jsonl")
 	contents := `{"type":"session_meta","payload":{"id":"verified-fixture"}}` + "\n" + `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fixture"}]}}` + "\n"
 	if err := os.WriteFile(source, []byte(contents), 0600); err != nil {
 		t.Fatal(err)
@@ -294,7 +294,7 @@ func TestImportedCheckpointSurvivesIsolatedGitRemoteAndFreshClone(t *testing.T) 
 
 func testCheckpointRemote(t *testing.T, backend string) {
 	t.Setenv("ENTIRE_CHECKPOINTS_PRIMARY", backend)
-	base := t.TempDir()
+	base := testTempDir(t)
 	remote := filepath.Join(base, "remote.git")
 	work := filepath.Join(base, "work")
 	clone := filepath.Join(base, "clone")
@@ -366,7 +366,7 @@ func TestPrivateHistoricalSession(t *testing.T) {
 		t.Fatal("cannot read selected session")
 	}
 	firstHash := sha256.Sum256(before)
-	root := t.TempDir()
+	root := testTempDir(t)
 	for _, args := range [][]string{{"init", "--quiet"}, {"commit", "--quiet", "--allow-empty", "-m", "local fixture"}} {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = root
@@ -475,7 +475,7 @@ func TestPrivateCodexCohortProcessIsolated(t *testing.T) {
 	if count < 10 || count > 20 {
 		t.Fatalf("cohort size outside 10-20: %d", count)
 	}
-	root := t.TempDir()
+	root := testTempDir(t)
 	globalConfig := filepath.Join(root, "empty.gitconfig")
 	if err := os.WriteFile(globalConfig, nil, 0600); err != nil {
 		t.Fatal("create empty global Git config")
@@ -827,7 +827,7 @@ func TestNativeOverlappingTasksRemainUnattributed(t *testing.T) {
 }
 
 func TestHeaderWithoutNewline(t *testing.T) {
-	root := t.TempDir()
+	root := testTempDir(t)
 	for _, args := range [][]string{{"init", "--quiet"}, {"commit", "--quiet", "--allow-empty", "-m", "fixture"}} {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = root
@@ -836,7 +836,7 @@ func TestHeaderWithoutNewline(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	source := filepath.Join(t.TempDir(), "header.jsonl")
+	source := filepath.Join(testTempDir(t), "header.jsonl")
 	if err := os.WriteFile(source, []byte(`{"type":"session_meta","payload":{"id":"valid-header"}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
