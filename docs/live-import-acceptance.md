@@ -60,6 +60,13 @@ expected session, Codex agent, imported kind and source-backed model.
 stored transcript. The original source hash remained unchanged. `--full`
 rendered the assistant's actual audit results through the service-backed reader.
 
+In a later authenticated check, Entire search returned the imported checkpoint
+as a session hit with the expected repository, Codex agent and session ID.
+However, the repository checkpoint-list API returned an empty array for the
+same repository while reporting `history_complete: true`. Thus search and
+known-ID readback can discover this record, while the repository list does not;
+do not claim that all Entire views display imported records correctly.
+
 The full render displays no recorded intent prompt. Source inspection established
 that this subagent's sole user-role input was an injected environment-context
 block, with no human request following it. Entire's rendering intentionally

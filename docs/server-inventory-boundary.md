@@ -60,3 +60,10 @@ The advertised schema endpoint returned 404 during this check. Until the listing
 contract, pagination and timing are established against stable before/after
 inventories, treat the endpoint as useful additional evidence rather than a
 standalone guarantee that no session exists. Raw results remain private.
+
+An independently known imported checkpoint was readable by the exact detail
+endpoint and returned by authenticated search, but the repository-list endpoint
+returned zero records for its repository with `history_complete: true`. This
+is a direct visibility difference for the same known record. It also rules out
+using an empty repository-list response as proof that no service-visible record
+exists. The cause of the difference has not been established.
