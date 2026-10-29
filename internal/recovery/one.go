@@ -29,39 +29,37 @@ func (s fixedSource) Discover(_ string, _ string, _ time.Time, _ []string) ([]ag
 	return []agentimport.SessionFile{s.file}, nil
 }
 
-// SplitTurns keeps Entire's boundaries and augments only unambiguous model
-// identifiers found in native turn_context events within that turn.
+// SplitTurns keeps Entire's boundaries. Model context can precede or follow a
+// prompt, so it is safe to associate only when the session has one turn and
+// all native contexts agree. Multi-turn association needs native turn evidence.
 func (s fixedSource) SplitTurns(file agentimport.SessionFile, full []byte) ([]agentimport.Turn, error) {
 	turns, err := s.Importer.SplitTurns(file, full)
 	if err != nil {
 		return nil, err
 	}
+	if len(turns) != 1 || turns[0].Model != "" {
+		return turns, nil
+	}
 	lines := bytes.Split(full, []byte{'\n'})
-	for i := range turns {
-		turn := &turns[i]
-		if turn.Model != "" || turn.LineStart < 0 || turn.LineEnd > len(lines) || turn.LineStart >= turn.LineEnd {
+	model, ambiguous := "", false
+	for _, line := range lines {
+		var event struct {
+			Type    string `json:"type"`
+			Payload struct {
+				Model string `json:"model"`
+			} `json:"payload"`
+		}
+		if json.Unmarshal(line, &event) != nil || event.Type != "turn_context" || event.Payload.Model == "" {
 			continue
 		}
-		model, ambiguous := "", false
-		for _, line := range lines[turn.LineStart:turn.LineEnd] {
-			var event struct {
-				Type    string `json:"type"`
-				Payload struct {
-					Model string `json:"model"`
-				} `json:"payload"`
-			}
-			if json.Unmarshal(line, &event) != nil || event.Type != "turn_context" || event.Payload.Model == "" {
-				continue
-			}
-			if model != "" && model != event.Payload.Model {
-				ambiguous = true
-				break
-			}
-			model = event.Payload.Model
+		if model != "" && model != event.Payload.Model {
+			ambiguous = true
+			break
 		}
-		if !ambiguous {
-			turn.Model = model
-		}
+		model = event.Payload.Model
+	}
+	if !ambiguous {
+		turns[0].Model = model
 	}
 	return turns, nil
 }

@@ -196,3 +196,50 @@ func TestModelRequiresUnambiguousContextInEachTurn(t *testing.T) {
 		t.Fatalf("ambiguous or absent model was populated")
 	}
 }
+
+func TestModelBeforePromptNeverAssignedToPriorTurn(t *testing.T) {
+	var adapter agentimport.Importer
+	for _, candidate := range agentimport.All() {
+		if candidate.Name() == "codex" {
+			adapter = candidate
+			break
+		}
+	}
+	if adapter == nil {
+		t.Fatal("Codex importer missing")
+	}
+	input := `{"type":"session_meta","payload":{"id":"test","cwd":"/old"}}
+{"type":"turn_context","payload":{"model":"model-a"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"one"}]}}
+{"type":"turn_context","payload":{"model":"model-b"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"two"}]}}
+`
+	turns, err := (fixedSource{Importer: adapter}).SplitTurns(agentimport.SessionFile{SessionID: "test"}, []byte(input))
+	if err != nil || len(turns) != 2 {
+		t.Fatalf("turns %d: %v", len(turns), err)
+	}
+	if turns[0].Model != "" || turns[1].Model != "" {
+		t.Fatal("model assigned without verified turn correlation")
+	}
+}
+
+func TestSingleTurnModelBeforePrompt(t *testing.T) {
+	var adapter agentimport.Importer
+	for _, candidate := range agentimport.All() {
+		if candidate.Name() == "codex" {
+			adapter = candidate
+			break
+		}
+	}
+	if adapter == nil {
+		t.Fatal("Codex importer missing")
+	}
+	input := `{"type":"session_meta","payload":{"id":"test","cwd":"/old"}}
+{"type":"turn_context","payload":{"model":"model-a"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"one"}]}}
+`
+	turns, err := (fixedSource{Importer: adapter}).SplitTurns(agentimport.SessionFile{SessionID: "test"}, []byte(input))
+	if err != nil || len(turns) != 1 || turns[0].Model != "model-a" {
+		t.Fatalf("single-turn model not preserved")
+	}
+}
