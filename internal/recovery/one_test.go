@@ -14,6 +14,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/agentimport"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
+	"github.com/entireio/cli/redact"
 	git "github.com/go-git/go-git/v6"
 )
 
@@ -306,10 +307,12 @@ func TestPrivateCodexCohortProcessIsolated(t *testing.T) {
 	}
 	root := t.TempDir()
 	for _, mode := range []string{"initial", "retry"} {
-		cmd := exec.Command(os.Args[0], "-test.run=^TestPrivateCodexCohortProcessIsolated$")
+		cmd := exec.Command(os.Args[0], "-test.run=^TestPrivateCodexCohortProcessIsolated$", "-test.v")
 		cmd.Env = append(os.Environ(), "RECOVERY_COHORT_CHILD=1", "RECOVERY_COHORT_DEST="+root, "RECOVERY_COHORT_MODE="+mode)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("private cohort %s process failed: %v: %s", mode, err, out)
+		} else {
+			t.Logf("%s", out)
 		}
 	}
 }
@@ -342,8 +345,18 @@ func runPrivateCohortChild(t *testing.T, manifest, root, mode string) {
 	anchor := destinationHead(t, root)
 	total, models := 0, 0
 	sessionIDs := map[string]bool{}
+	expectedContent := map[string][32]byte{}
+	expectedBoundaries := map[string]map[int]bool{}
+	var adapter agentimport.Importer
+	for _, available := range agentimport.All() {
+		if available.Name() == "codex" {
+			adapter = available
+		}
+	}
+	if adapter == nil {
+		t.Fatal("Codex parser missing")
+	}
 	hashes := make([][32]byte, len(sources))
-	want := make([]int, len(sources))
 	for i, source := range sources {
 		before, err := os.ReadFile(source)
 		if err != nil {
@@ -358,7 +371,18 @@ func runPrivateCohortChild(t *testing.T, manifest, root, mode string) {
 			t.Fatalf("duplicate session identity at item %d", i)
 		}
 		sessionIDs[id] = true
-		result, err := ImportCodex(context.Background(), root, source, anchor, mode == "retry")
+		turns, err := adapter.SplitTurns(agentimport.SessionFile{SessionID: id}, before)
+		if err != nil {
+			t.Fatalf("source %d boundaries unavailable", i)
+		}
+		expectedBoundaries[id] = map[int]bool{}
+		for _, turn := range turns {
+			if _, duplicate := expectedBoundaries[id][turn.LineStart]; duplicate {
+				t.Fatal("source parser repeated a boundary")
+			}
+			expectedBoundaries[id][turn.LineStart] = false
+		}
+		result, err := ImportCodex(context.Background(), root, source, anchor, false)
 		if err != nil {
 			t.Fatalf("source %d import failed", i)
 		}
@@ -366,11 +390,15 @@ func runPrivateCohortChild(t *testing.T, manifest, root, mode string) {
 			if result.SessionsScanned != 1 || result.TurnsImported == 0 {
 				t.Fatalf("source %d not imported", i)
 			}
-			want[i] = result.TurnsImported
 			total += result.TurnsImported
-		} else if result.TurnsImported != 0 || result.TurnsSkipped == 0 {
+		} else if result.TurnsImported != 0 || result.TurnsSkipped != len(turns) {
 			t.Fatalf("source %d retry duplicated or skipped nothing", i)
 		}
+		redacted, err := redact.JSONLBytes(checkpoint.SanitizeTranscriptForAgentType("Codex", before))
+		if err != nil {
+			t.Fatalf("source %d comparison redaction failed", i)
+		}
+		expectedContent[id] = sha256.Sum256(redacted.Bytes())
 	}
 	repo, err := git.PlainOpen(root)
 	if err != nil {
@@ -387,6 +415,9 @@ func runPrivateCohortChild(t *testing.T, manifest, root, mode string) {
 		_ = repo.Close()
 		t.Fatal("checkpoint readback unavailable")
 	}
+	if mode == "initial" && len(items) != total {
+		t.Fatal("stored count does not match successful imports")
+	}
 	seenIDs := map[string]bool{}
 	for _, item := range items {
 		c, err := stores.Persistent.ReadSessionContent(ctx, item.CheckpointID, 0)
@@ -395,6 +426,14 @@ func runPrivateCohortChild(t *testing.T, manifest, root, mode string) {
 			t.Fatal("checkpoint metadata/content unavailable")
 		}
 		seenIDs[c.Metadata.SessionID] = true
+		if !sessionIDs[c.Metadata.SessionID] || sha256.Sum256(c.Transcript) != expectedContent[c.Metadata.SessionID] {
+			t.Fatal("stored transcript does not match expected sanitized source")
+		}
+		boundaries := expectedBoundaries[c.Metadata.SessionID]
+		if seen, exists := boundaries[c.Metadata.CheckpointTranscriptStart]; !exists || seen {
+			t.Fatal("unexpected or duplicate stored boundary")
+		}
+		boundaries[c.Metadata.CheckpointTranscriptStart] = true
 		if c.Metadata.Model != "" {
 			models++
 		}
@@ -403,15 +442,36 @@ func runPrivateCohortChild(t *testing.T, manifest, root, mode string) {
 		_ = repo.Close()
 		t.Fatal("not all source sessions read back")
 	}
+	for _, boundaries := range expectedBoundaries {
+		for _, seen := range boundaries {
+			if !seen {
+				t.Fatal("source boundary missing from readback")
+			}
+		}
+	}
 	if err := repo.Close(); err != nil {
 		t.Fatal("close reader")
 	}
 	countPath := filepath.Join(root, "cohort-checkpoint-count")
+	refsCommand := exec.Command("git", "for-each-ref", "--format=%(refname) %(objectname)")
+	refsCommand.Dir = root
+	refs, err := refsCommand.Output()
+	if err != nil {
+		t.Fatal("cannot verify checkpoint ref stability")
+	}
+	refsPath := filepath.Join(root, "cohort-checkpoint-refs")
 	if mode == "initial" {
+		if err := os.WriteFile(refsPath, refs, 0600); err != nil {
+			t.Fatal("cannot record checkpoint refs")
+		}
 		if err := os.WriteFile(countPath, []byte(strconv.Itoa(len(items))), 0600); err != nil {
 			t.Fatal("record local checkpoint count")
 		}
 	} else {
+		priorRefs, err := os.ReadFile(refsPath)
+		if err != nil || string(priorRefs) != string(refs) {
+			t.Fatal("retry changed checkpoint refs")
+		}
 		wantBytes, err := os.ReadFile(countPath)
 		if err != nil {
 			t.Fatal("initial checkpoint count unavailable")
