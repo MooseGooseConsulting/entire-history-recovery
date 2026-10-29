@@ -10,7 +10,7 @@ User decisions from the October 29 conversation:
 
 - Build and prove ingestion before searching all machines. Do not substitute repeated stock `entire import` calls for recovery tooling.
 - Missing original checkouts are a required case. A replacement clone is a destination, not a prerequisite for finding a source.
-- Use Windows now, where Entire is authenticated; SER10 remains a useful Linux execution/test host. Neither host's auth failure blocks independent work on the other.
+- Use Windows now, where Entire is authenticated; Linux remains a useful second execution and test platform. Neither host's auth failure blocks independent work on the other.
 - Keep tools, synthetic fixtures and sanitized docs in this public repo; real transcripts, manifests and credentials remain private.
 - Deliver stacked PRs, inspect reviews and required checks, and address findings before merging. Do not merge just because a PR was created.
 - Target the field catalog and review the complete path before bulk writes.
@@ -168,7 +168,7 @@ The remote-only duplicate fixture has three checkouts: writer publishes the firs
 
 ## Execution locations, code seams and commands
 
-Local development checkout: `C:/Users/pmacl/Documents/Codex/entire-recovery-local`. Linux checkout: `/home/coldaine/projects/entire-history-recovery` on `ser10`. Original `D:/_projects/homelab-next` is unrelated dirty work and is not a recovery staging area. Private source pointers/evidence stay outside the public repo; do not add their paths or contents to fixtures or CI.
+Use a dedicated recovery checkout on the chosen Windows or Linux host. Unrelated repositories are not recovery staging areas. Private source pointers and evidence stay outside the public repo; do not add their paths or contents to fixtures or CI.
 
 Existing seams: `internal/recovery/one.go` (`ImportCodex`, `fixedSource`, `validateCodexSnapshot`); `one_test.go`; `integrity_test.go`; `prompt_evidence.go`. Proposed modules: `internal/source` for snapshot/format adapters, `internal/mapping` for repository evidence, `internal/reconcile` for existing coverage, `internal/ledger` for transactions, and `internal/transport` for publish/readback receipts. Create each only in the slice that uses it. Keep the command a thin wrapper, use argument arrays rather than shell-built commands.
 
