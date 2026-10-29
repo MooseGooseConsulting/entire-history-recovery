@@ -75,6 +75,33 @@ func TestSnapshotAcceptsCRLFAndUnknownEventTypes(t *testing.T) {
 	}
 }
 
+func TestChangingCheckpointBackendDoesNotDuplicateSession(t *testing.T) {
+	for _, initial := range []string{"git-branch", "git-refs"} {
+		t.Run(initial, func(t *testing.T) {
+			t.Setenv("ENTIRE_CHECKPOINTS_PRIMARY", initial)
+			root := integrityRepo(t)
+			source := filepath.Join(t.TempDir(), "session.jsonl")
+			if err := os.WriteFile(source, []byte(integrityHeader+integrityPrompt), 0600); err != nil {
+				t.Fatal(err)
+			}
+			anchor := destinationHead(t, root)
+			first, err := ImportCodex(context.Background(), root, source, anchor, false)
+			if err != nil || first.TurnsImported != 1 {
+				t.Fatalf("initial: %+v %v", first, err)
+			}
+			next := "git-refs"
+			if initial == next {
+				next = "git-branch"
+			}
+			t.Setenv("ENTIRE_CHECKPOINTS_PRIMARY", next)
+			second, err := ImportCodex(context.Background(), root, source, anchor, false)
+			if err != nil || second.TurnsImported != 0 || second.TurnsSkipped != 1 {
+				t.Fatalf("backend migration: %+v %v", second, err)
+			}
+		})
+	}
+}
+
 const integrityHeader = `{"type":"session_meta","payload":{"id":"integrity-fixture"}}` + "\n"
 const integrityPrompt = `{"timestamp":"2020-01-01T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fixture"}]}}` + "\n"
 
