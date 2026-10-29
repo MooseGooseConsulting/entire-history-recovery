@@ -43,6 +43,57 @@ func TestStrictBranchRejectsUnknownRootLayout(t *testing.T) {
 	}
 }
 
+func TestStrictRemoteInventoryFetchesCurrentTreeWithoutBranchHistory(t *testing.T) {
+	setStrictInventoryProcessEnv(t)
+	writer := testTempDir(t)
+	runStrictGit(t, writer, "init", "--quiet")
+	oldFile := filepath.Join(writer, "retired-transcript")
+	if err := os.WriteFile(oldFile, []byte(strings.Repeat("retired history\n", 20000)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runStrictGit(t, writer, "add", ".")
+	runStrictGit(t, writer, "commit", "--quiet", "-m", "old checkpoint data")
+	oldCommit := strings.TrimSpace(string(runStrictGit(t, writer, "rev-parse", "HEAD")))
+	oldBlob := strings.TrimSpace(string(runStrictGit(t, writer, "rev-parse", "HEAD:retired-transcript")))
+	runStrictGit(t, writer, "rm", "--quiet", "retired-transcript")
+	if err := os.WriteFile(filepath.Join(writer, "current-transcript"), []byte("current coverage"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runStrictGit(t, writer, "add", ".")
+	runStrictGit(t, writer, "commit", "--quiet", "-m", "current checkpoint data")
+	runStrictGit(t, writer, "branch", paths.MetadataBranchName)
+	ctx := withTestInventoryWorkspace(t, context.Background())
+	_, fetched, err := fetchRemoteInventory(ctx, writer, writer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fetched.Close()
+	ref, err := fetched.Reference(plumbing.NewBranchReferenceName(paths.MetadataBranchName), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit, err := fetched.CommitObject(ref.Hash())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := tree.File("current-transcript")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content, err := current.Contents(); err != nil || content != "current coverage" {
+		t.Fatal("current inventory body was not fetched")
+	}
+	for _, hash := range []string{oldCommit, oldBlob} {
+		if _, err := fetched.Storer.EncodedObject(plumbing.AnyObject, plumbing.NewHash(hash)); err == nil {
+			t.Fatal("inventory fetched obsolete checkpoint history")
+		}
+	}
+}
+
 func TestWithInventoryWorkspaceRequiresPrivateDirectory(t *testing.T) {
 	parent := testTempDir(t)
 	private := filepath.Join(parent, "private")

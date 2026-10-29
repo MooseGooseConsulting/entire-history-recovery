@@ -16,9 +16,19 @@ The preflight does not trust upstream `PersistentStore.List` or
 malformed entries. It validates Git refs, commit/tree targets, shard structure,
 root summaries, and all session metadata itself. For each configured Entire
 checkpoint read target, it requires a successful `ls-remote` and fetches into a
-temporary bare repository; it verifies fetched ref hashes and removes the
-temporary repository. It does not add, advance, or delete refs in the checkout.
+temporary bare repository; it verifies fetched ref hashes. The caller owns its
+private workspace and removes it after the worker exits and releases Git handles.
+It does not add, advance, or delete refs in the checkout.
 Any target listing, fetch, or parse failure stops the import.
+
+Inventory fetches use depth one: every selected ref's current tree and blobs are
+available, without downloading obsolete metadata-branch commits and transcripts.
+Legacy dumb HTTP stores do not support shallow fetches; only Git's explicit
+unsupported-capability error permits a full-fetch retry within the same 90-second
+deadline. Authentication, cancellation and other fetch failures do not trigger
+that retry. Dumb HTTP may still download branch history, and large current trees
+still require proportionate disk space. This is a one-session preflight, not yet
+a cached or incremental batch inventory.
 
 `AssessExact` compares a verified candidate with matching session records. It
 recognizes session/agent/transcript/boundaries irrespective of checkpoint ID or

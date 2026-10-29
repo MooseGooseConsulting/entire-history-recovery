@@ -419,19 +419,53 @@ func fetchStrictObjects(ctx context.Context, worktreeRoot, bareDir, target strin
 	if err != nil {
 		return err
 	}
-	args := []string{"fetch", "--no-auto-gc", "--no-tags", "--no-write-fetch-head", target}
-	args = append(args, refspecs...)
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = bareDir
-	cmd.Env = env
-	cmd.Stdin = nil
-	execx.TerminateOnCancel(cmd)
-	if err := cmd.Run(); err != nil {
-		// Do not expose transport URLs, helper output, or credentials through
-		// error strings; the caller reports a stable generic failure.
-		return errors.New("git fetch failed")
+	// Inventory needs the advertised trees, not the metadata branch's history.
+	// Each selected ref still contributes its complete current tree and blobs.
+	// Legacy dumb HTTP cannot fetch shallowly; retry only that capability error,
+	// within the original deadline, to retain support for those existing stores.
+	env = replaceEnvValue(env, "LC_ALL", "C")
+	for _, shallow := range []bool{true, false} {
+		args := []string{"fetch", "--no-auto-gc", "--no-tags", "--no-write-fetch-head"}
+		if shallow {
+			args = append(args, "--depth=1")
+		}
+		args = append(args, target)
+		args = append(args, refspecs...)
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = bareDir
+		cmd.Env = env
+		cmd.Stdin = nil
+		var diagnostic fetchDiagnostic
+		cmd.Stderr = &diagnostic
+		execx.TerminateOnCancel(cmd)
+		if err := cmd.Run(); err == nil {
+			return nil
+		}
+		if !shallow || ctx.Err() != nil || !bytes.Contains(diagnostic.data, []byte("dumb http transport does not support shallow capabilities")) {
+			break
+		}
 	}
-	return nil
+	// Never expose URLs, helper output, or credentials from transport diagnostics.
+	return errors.New("git fetch failed")
+}
+
+// Retain only a bounded tail for capability detection; never print this data.
+type fetchDiagnostic struct {
+	data []byte
+}
+
+func (d *fetchDiagnostic) Write(p []byte) (int, error) {
+	const limit = 4096
+	n := len(p)
+	if len(p) >= limit {
+		d.data = append(d.data[:0], p[len(p)-limit:]...)
+	} else {
+		if len(d.data)+len(p) > limit {
+			d.data = d.data[len(d.data)+len(p)-limit:]
+		}
+		d.data = append(d.data, p...)
+	}
+	return n, nil
 }
 
 func strictLsRemote(ctx context.Context, worktreeRoot, target string, patterns ...string) ([]byte, error) {
