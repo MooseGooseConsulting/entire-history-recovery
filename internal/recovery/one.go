@@ -114,7 +114,9 @@ func ImportCodex(ctx context.Context, repoRoot, source, anchor string, dryRun bo
 // ImportCodexVerified imports only when source still has the SHA-256 verified
 // by the caller. It also pins that digest across agentimport.Run's reread.
 func ImportCodexVerified(ctx context.Context, repoRoot, source, anchor, expectedSHA256 string, dryRun bool) (agentimport.Result, error) {
-	if len(expectedSHA256) != 64 { return agentimport.Result{}, errors.New("expected snapshot SHA-256 is required") }
+	if len(expectedSHA256) != 64 {
+		return agentimport.Result{}, errors.New("expected snapshot SHA-256 is required")
+	}
 	return importCodex(ctx, repoRoot, source, anchor, expectedSHA256, dryRun)
 }
 
@@ -140,7 +142,9 @@ func importCodex(ctx context.Context, repoRoot, source, anchor, expectedSHA256 s
 		return result, err
 	}
 	digest := sha256.Sum256(full)
-	if expectedSHA256 != "" && fmt.Sprintf("%x", digest) != expectedSHA256 { return result, errors.New("snapshot changed after verification") }
+	if expectedSHA256 != "" && fmt.Sprintf("%x", digest) != expectedSHA256 {
+		return result, errors.New("snapshot changed after verification")
+	}
 	var adapter agentimport.Importer
 	for _, candidate := range agentimport.All() {
 		if candidate.Name() == "codex" {
