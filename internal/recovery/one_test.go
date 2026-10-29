@@ -190,6 +190,27 @@ func TestPrivateHistoricalSession(t *testing.T) {
 		t.Fatal("source changed")
 	}
 	t.Logf("local round trip: %d turns; agent recorded; model recorded for %d turns", result.TurnsImported, models)
+	for _, adapter := range agentimport.All() {
+		if adapter.Name() != "codex" {
+			continue
+		}
+		turns, err := adapter.SplitTurns(agentimport.SessionFile{}, before)
+		if err != nil {
+			t.Fatal("could not analyze native prompt evidence")
+		}
+		evidence := CompareNativePrompts(before, turns)
+		t.Logf("import units: %d; native completed user messages: %d; text overlaps: %d", evidence.ImporterUnits, evidence.NativeMessages, evidence.TextMatches)
+	}
+}
+
+func TestCompareNativePromptsCountsMultiplicity(t *testing.T) {
+	turns := []agentimport.Turn{{Prompt: "same"}, {Prompt: "same"}, {Prompt: "other"}}
+	data := []byte(`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"text":"same"}]}}}
+{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"text":"unknown"}]}}}`)
+	got := CompareNativePrompts(data, turns)
+	if got.ImporterUnits != 3 || got.NativeMessages != 2 || got.TextMatches != 1 || got.UnmatchedUnits != 2 || got.UnmatchedNativeMessages != 1 {
+		t.Fatalf("unexpected evidence counts: %+v", got)
+	}
 }
 
 func TestModelRequiresUnambiguousContextInEachTurn(t *testing.T) {
