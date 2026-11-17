@@ -43,6 +43,15 @@ different boundaries remains separate. Different redaction versions, partial
 snapshots, compacted exports and native event alignment require the later
 reconciliation layer; this helper deliberately holds instead of guessing.
 
+The upgrade from Entire v0.12.2 to v0.13.3 can change Codex transcript bytes:
+the newer writer blanks base instructions that older checkpoints may retain.
+An otherwise identical retry against such an older record is deliberately held,
+not treated as absent or silently normalized. Keep the source and existing
+checkpoint intact; reconcile the version difference privately before resuming.
+The earlier v0.12.2 acceptance results do not validate the new writer. Repeat
+the local and hosted round trips described in the
+[acceptance record](live-import-acceptance.md) before relying on it.
+
 The recovery adapter uses Entire's `transcript.IsInjectedPrompt` classifier to
 exclude injected Codex preambles from prompt metadata while preserving the
 complete source transcript. If a session contains only injected user-side

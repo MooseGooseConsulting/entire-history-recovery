@@ -176,23 +176,23 @@ Use a dedicated recovery checkout on the chosen Windows or Linux host. Unrelated
 
 Existing seams: `internal/recovery/one.go` (`ImportCodex`, `fixedSource`, `validateCodexSnapshot`); `one_test.go`; `integrity_test.go`; `prompt_evidence.go`. Proposed modules: `internal/source` for snapshot/format adapters, `internal/mapping` for repository evidence, `internal/reconcile` for existing coverage, `internal/ledger` for transactions, and `internal/transport` for publish/readback receipts. Create each only in the slice that uses it. Keep the command a thin wrapper, use argument arrays rather than shell-built commands.
 
-Upstream reference: module `github.com/entireio/cli@v0.12.2`, `cmd/entire/cli/agentimport/{agentimport,codex}.go`, `checkpoint/open.go`, `strategy/checkpoint_read_remotes.go` and `git_operations.go`. Inspect their current signatures before implementing. `Run`'s `ReadRemotes`/`RemoteRefLister` provide discovery hooks; they do not implement semantic live-session deduplication for us.
+Upstream reference: module `github.com/entireio/cli@v0.13.3`, `cmd/entire/cli/agentimport/{agentimport,codex}.go`, `checkpoint/open.go`, `strategy/checkpoint_read_remotes.go` and `git_operations.go`. Inspect their current signatures before implementing. `Run`'s `ReadRemotes`/`RemoteRefLister` provide discovery hooks; they do not implement semantic live-session deduplication for us.
 
 Existing verification commands (no bulk writes):
 
 ```powershell
 # Windows, from the development checkout; use installed Go explicitly.
-mise exec go@1.27.3 -- go test ./... -count=1
-mise exec go@1.27.3 -- go vet ./...
+mise exec go@1.27.4 -- go test ./... -count=1
+mise exec go@1.27.4 -- go vet ./...
 # Optional private session test: set RECOVERY_TEST_CODEX_SOURCE privately first.
-mise exec go@1.27.3 -- go test ./... -run TestPrivateHistoricalSession -count=1 -v
+mise exec go@1.27.4 -- go test ./... -run TestPrivateHistoricalSession -count=1 -v
 ```
 
 ```sh
 # Linux, from the development checkout.
-GOTOOLCHAIN=go1.27.3 go test ./... -count=1
-GOTOOLCHAIN=go1.27.3 go test -race ./... -count=1
-GOTOOLCHAIN=go1.27.3 go vet ./...
+GOTOOLCHAIN=go1.27.4 go test ./... -count=1
+GOTOOLCHAIN=go1.27.4 go test -race ./... -count=1
+GOTOOLCHAIN=go1.27.4 go vet ./...
 ```
 
 For server verification, first inspect `entire agent-help checkpoint explain`. Use `--repo` and the full checkpoint ID to force API-backed cross-repository readback, rather than accepting a local cached record as cloud proof. Keep metadata/transcript responses private; compare bodies/digests in the verifier without printing them. Confirm the server returns all sessions/assets required by the tested record.
