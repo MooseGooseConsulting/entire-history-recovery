@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	cp "github.com/entireio/cli/api/checkpoint"
+	"github.com/entireio/cli/cmd/entire/cli/agent"
+	checkpoint "github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 )
 
@@ -58,6 +60,27 @@ func TestHydrateAllSessionsAndRecognizeLiveCoverage(t *testing.T) {
 	got, err = AssessExact(candidate, records)
 	if err != nil || got.Status != "hold" {
 		t.Fatalf("different snapshot guessed safe: %+v %v", got, err)
+	}
+}
+
+func TestWriterUpgradeHoldsChangedCodexTranscript(t *testing.T) {
+	// A v0.12.2 checkpoint can retain base instructions that v0.13.3 blanks.
+	legacy := []byte("{\"type\":\"session_meta\",\"payload\":{\"id\":\"recovered\",\"base_instructions\":{\"text\":\"fixture instructions\"}}}\n" +
+		"{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hello\"}]}}\n")
+	current := checkpoint.SanitizeTranscriptForAgentType(agent.AgentTypeCodex, legacy)
+	if string(current) == string(legacy) {
+		t.Fatal("fixture did not exercise changed transcript sanitization")
+	}
+	candidate := Candidate{SessionID: "recovered", Agent: "Codex", Transcript: current, Starts: []int{1}}
+	record := Record{Content: cp.SessionContent{Metadata: cp.Metadata{SessionID: "recovered", Agent: "Codex", CheckpointTranscriptStart: 1}, Transcript: legacy}}
+	got, err := AssessExact(candidate, []Record{record})
+	if err != nil || got.Status != "hold" {
+		t.Fatalf("legacy transcript must hold retry: %+v %v", got, err)
+	}
+	record.Content.Transcript = current
+	got, err = AssessExact(candidate, []Record{record})
+	if err != nil || got.Status != "present" || got.Covered != 1 {
+		t.Fatalf("matching current transcript: %+v %v", got, err)
 	}
 }
 

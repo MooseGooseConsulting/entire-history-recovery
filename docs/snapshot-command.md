@@ -1,6 +1,6 @@
 # Local sealed-snapshot command
 
-Build `cmd/recover-one` with Go 1.27.3. This is an experimental **local-only**
+Build `cmd/recover-one` with Go 1.27.4. This is an experimental **local-only**
 command for the [rollout plan's first slice](plans/history-recovery.md). It does
 not resolve historical repository ownership, reconcile all existing server
 history, or publish checkpoints. Do not use it as the bulk ingestion runner.
