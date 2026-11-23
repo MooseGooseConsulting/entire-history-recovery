@@ -3,7 +3,7 @@ module github.com/MooseGooseConsulting/entire-history-recovery
 go 1.27.4
 
 require (
-	github.com/entireio/cli v0.13.3
+	github.com/entireio/cli v0.13.4
 	github.com/go-git/go-git/v6 v6.0.0-beta.1.0.20261105090440-f07160f87eaa
 	golang.org/x/sys v0.50.0
 )
